@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import type { Transform } from '../types';
 
 interface Bounds {
@@ -14,58 +14,63 @@ interface UseImageTransformProps {
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 5;
 
+const normalizeAngle = (angle: number): number => {
+  let newAngle = angle % 360;
+  if (newAngle > 180) newAngle -= 360;
+  else if (newAngle <= -180) newAngle += 360;
+  return newAngle;
+};
+
 export const useImageTransform = (props: UseImageTransformProps) => {
   const { imageBounds, frameBounds } = props;
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, scale: 1, rotation: 0, flipX: false, flipY: false });
   
   const isInteracting = useRef(false);
-  const lastPanPosition = useRef({ x: 0, y: 0 });
-  const touchState = useRef({ lastDist: 0, lastAngle: 0, startTransform: transform });
+  const interactionState = useRef({
+    lastPanPosition: { x: 0, y: 0 },
+    lastTouchDist: 0,
+    lastTouchAngle: 0
+  });
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const clampTransform = useCallback((t: Transform): Transform => {
+  const clampTransform = useCallback((t: Transform, prevT?: Transform): Transform => {
     if (!imageBounds || !frameBounds) return t;
 
+    const prevTransform = prevT || t;
     const angleRad = t.rotation * (Math.PI / 180);
     const cos = Math.cos(angleRad);
     const sin = Math.sin(angleRad);
-    const absCos = Math.abs(cos);
-    const absSin = Math.abs(sin);
 
-    // 1. Calculate minimum scale to cover the frame, accounting for rotation.
-    const minScaleToCoverX = (frameBounds.width * absCos + frameBounds.height * absSin) / imageBounds.width;
-    const minScaleToCoverY = (frameBounds.width * absSin + frameBounds.height * absCos) / imageBounds.height;
+    const rotatedImgWidth = Math.abs(imageBounds.width * cos) + Math.abs(imageBounds.height * sin);
+    const rotatedImgHeight = Math.abs(imageBounds.width * sin) + Math.abs(imageBounds.height * cos);
+
+    const minScaleToCoverX = frameBounds.width / rotatedImgWidth;
+    const minScaleToCoverY = frameBounds.height / rotatedImgHeight;
     const minScale = Math.max(minScaleToCoverX, minScaleToCoverY, MIN_ZOOM);
     
-    const scaleBeforeClamp = Math.min(t.scale, MAX_ZOOM);
-    const clampedScale = Math.max(scaleBeforeClamp, minScale);
-
+    let clampedScale = Math.max(minScale, Math.min(t.scale, MAX_ZOOM));
+    
     let { x, y } = t;
 
-    // Adjust pan position if scale was auto-adjusted, to keep zoom centered
-    if (clampedScale > t.scale && t.scale > 0) {
-      const scaleRatio = clampedScale / t.scale;
+    if (clampedScale > prevTransform.scale) {
+      const scaleRatio = clampedScale / prevTransform.scale;
       x *= scaleRatio;
       y *= scaleRatio;
     }
 
-    // 2. Calculate max panning range in the image's rotated coordinate system
-    const panRangeX = Math.max(0, (imageBounds.width * clampedScale - (frameBounds.width * absCos + frameBounds.height * absSin)) / 2);
-    const panRangeY = Math.max(0, (imageBounds.height * clampedScale - (frameBounds.width * absSin + frameBounds.height * absCos)) / 2);
-    
-    // 3. Convert current pan vector to image's coordinate system
-    const currentPanXImage = x * cos + y * sin;
-    const currentPanYImage = -x * sin + y * cos;
+    const imgDisplayWidth = imageBounds.width * clampedScale;
+    const imgDisplayHeight = imageBounds.height * clampedScale;
 
-    // 4. Clamp the pan in the image's coordinate system
-    const clampedPanXImage = Math.max(-panRangeX, Math.min(currentPanXImage, panRangeX));
-    const clampedPanYImage = Math.max(-panRangeY, Math.min(currentPanYImage, panRangeY));
+    const rotatedWidth = Math.abs(imgDisplayWidth * cos) + Math.abs(imgDisplayHeight * sin);
+    const rotatedHeight = Math.abs(imgDisplayWidth * sin) + Math.abs(imgDisplayHeight * cos);
 
-    // 5. Convert clamped pan vector back to viewport coordinates
-    const clampedX = clampedPanXImage * cos - clampedPanYImage * sin;
-    const clampedY = clampedPanXImage * sin + clampedPanYImage * cos;
+    const panRangeX = Math.max(0, (rotatedWidth - frameBounds.width) / 2);
+    const panRangeY = Math.max(0, (rotatedHeight - frameBounds.height) / 2);
+
+    x = Math.max(-panRangeX, Math.min(x, panRangeX));
+    y = Math.max(-panRangeY, Math.min(y, panRangeY));
     
-    return { ...t, x: clampedX, y: clampedY, scale: clampedScale };
+    return { ...t, x, y, scale: clampedScale, rotation: normalizeAngle(t.rotation) };
   }, [imageBounds, frameBounds]);
   
 
@@ -76,42 +81,46 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     const scaleY = frameBounds.height / imageBounds.height;
     const initialScale = Math.max(scaleX, scaleY);
 
-    setTransform({ x: 0, y: 0, scale: initialScale, rotation: 0, flipX: false, flipY: false });
-  }, [imageBounds, frameBounds]);
+    setTransform(clampTransform({ x: 0, y: 0, scale: initialScale, rotation: 0, flipX: false, flipY: false }));
+  }, [imageBounds, frameBounds, clampTransform]);
 
   const rotateBy = useCallback((degrees: number) => {
-    setTransform(prev => clampTransform({ ...prev, rotation: prev.rotation + degrees }));
+    setTransform(prev => clampTransform({ ...prev, rotation: prev.rotation + degrees }, prev));
   }, [clampTransform]);
 
   const setRotation = useCallback((degrees: number) => {
-    setTransform(prev => clampTransform({ ...prev, rotation: degrees }));
+    setTransform(prev => clampTransform({ ...prev, rotation: degrees }, prev));
   }, [clampTransform]);
 
   const flip = useCallback((axis: 'x' | 'y') => {
-      setTransform(prev => clampTransform({ ...prev, flipX: axis === 'x' ? !prev.flipX : prev.flipX, flipY: axis === 'y' ? !prev.flipY : prev.flipY }));
+      setTransform(prev => clampTransform({ ...prev, flipX: axis === 'x' ? !prev.flipX : prev.flipX, flipY: axis === 'y' ? !prev.flipY : prev.flipY }, prev));
   }, [clampTransform]);
 
   const onInteractionStart = useCallback((clientX: number, clientY: number) => {
     isInteracting.current = true;
-    lastPanPosition.current = { x: clientX, y: clientY };
+    interactionState.current.lastPanPosition = { x: clientX, y: clientY };
   }, []);
 
   const onPan = useCallback((clientX: number, clientY: number) => {
     if (!isInteracting.current) return;
-    const dx = clientX - lastPanPosition.current.x;
-    const dy = clientY - lastPanPosition.current.y;
-    lastPanPosition.current = { x: clientX, y: clientY };
+    const dx = clientX - interactionState.current.lastPanPosition.x;
+    const dy = clientY - interactionState.current.lastPanPosition.y;
+    interactionState.current.lastPanPosition = { x: clientX, y: clientY };
 
     setTransform(prev => {
-        const newX = prev.x + dx;
-        const newY = prev.y + dy;
-        return clampTransform({ ...prev, x: newX, y: newY });
+        const angleRad = -prev.rotation * (Math.PI / 180);
+        const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+        const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+        const newX = prev.x + rotatedDx;
+        const newY = prev.y + rotatedDy;
+        return clampTransform({ ...prev, x: newX, y: newY }, prev);
     });
   }, [clampTransform]);
   
   const onInteractionEnd = useCallback(() => {
     isInteracting.current = false;
-  }, []);
+    setTransform(prev => clampTransform(prev, prev));
+  }, [clampTransform]);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!containerRef.current) return;
@@ -126,56 +135,94 @@ export const useImageTransform = (props: UseImageTransformProps) => {
         const mouseX = e.clientX - rect.left - rect.width / 2;
         const mouseY = e.clientY - rect.top - rect.height / 2;
 
-        const newX = prev.x - (mouseX - prev.x) * (newScale / prev.scale - 1);
-        const newY = prev.y - (mouseY - prev.y) * (newScale / prev.scale - 1);
+        const angleRad = -prev.rotation * (Math.PI / 180);
+        const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
+        const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
 
-        return clampTransform({ ...prev, scale: newScale, x: newX, y: newY });
+        const newX = prev.x - (rotatedMouseX - prev.x) * (zoomFactor - 1);
+        const newY = prev.y - (rotatedMouseY - prev.y) * (zoomFactor - 1);
+
+        return clampTransform({ ...prev, scale: newScale, x: newX, y: newY }, prev);
     });
   }, [clampTransform]);
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
-    onInteractionEnd();
+    isInteracting.current = true;
     if (e.touches.length === 1) {
-        onInteractionStart(e.touches[0].clientX, e.touches[0].clientY);
+      interactionState.current.lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     } else if (e.touches.length === 2) {
-        isInteracting.current = true;
         const [t1, t2] = [e.touches[0], e.touches[1]];
-        const dx = t1.clientX - t2.clientX;
-        const dy = t1.clientY - t2.clientY;
-        touchState.current = {
-            lastDist: Math.hypot(dx, dy),
-            lastAngle: Math.atan2(dy, dx) * (180 / Math.PI),
-            startTransform: transform,
-        };
+        interactionState.current.lastTouchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        interactionState.current.lastTouchAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
+        interactionState.current.lastPanPosition = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
     }
-  }, [onInteractionStart, onInteractionEnd, transform]);
+  }, []);
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
     if (!isInteracting.current) return;
+    
+    setTransform(prev => {
+        let newTransform = { ...prev };
 
-    if (e.touches.length === 1) {
-        onPan(e.touches[0].clientX, e.touches[0].clientY);
-    } else if (e.touches.length === 2) {
-        const [t1, t2] = [e.touches[0], e.touches[1]];
-        const dx = t1.clientX - t2.clientX;
-        const dy = t1.clientY - t2.clientY;
-        const dist = Math.hypot(dx, dy);
-        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-        
-        const scale = touchState.current.startTransform.scale * (dist / touchState.current.lastDist);
-        const rotation = touchState.current.startTransform.rotation + (angle - touchState.current.lastAngle);
-        
-        setTransform(prev => clampTransform({ ...prev, scale, rotation }));
-    }
-  }, [onPan, clampTransform]);
+        if (e.touches.length === 1) {
+            const t = e.touches[0];
+            const dx = t.clientX - interactionState.current.lastPanPosition.x;
+            const dy = t.clientY - interactionState.current.lastPanPosition.y;
+            interactionState.current.lastPanPosition = { x: t.clientX, y: t.clientY };
+            
+            const angleRad = -prev.rotation * (Math.PI / 180);
+            const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+            const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+            newTransform.x += rotatedDx;
+            newTransform.y += rotatedDy;
 
-  const imageStyle: React.CSSProperties = {
+        } else if (e.touches.length === 2) {
+            const [t1, t2] = [e.touches[0], e.touches[1]];
+            const newDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+            const newAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
+            const centerPos = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+            
+            const scaleFactor = newDist / interactionState.current.lastTouchDist;
+            const angleDelta = newAngle - interactionState.current.lastTouchAngle;
+            
+            newTransform.scale *= scaleFactor;
+            newTransform.rotation += angleDelta;
+            
+            const dx = centerPos.x - interactionState.current.lastPanPosition.x;
+            const dy = centerPos.y - interactionState.current.lastPanPosition.y;
+
+            const angleRad = -prev.rotation * (Math.PI / 180);
+            const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+            const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+
+            newTransform.x += rotatedDx;
+            newTransform.y += rotatedDy;
+
+            const rect = containerRef.current!.getBoundingClientRect();
+            const mouseX = centerPos.x - rect.left - rect.width / 2;
+            const mouseY = centerPos.y - rect.top - rect.height / 2;
+
+            const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
+            const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
+            
+            newTransform.x -= (rotatedMouseX - newTransform.x) * (scaleFactor - 1);
+            newTransform.y -= (rotatedMouseY - newTransform.y) * (scaleFactor - 1);
+
+            interactionState.current.lastTouchDist = newDist;
+            interactionState.current.lastTouchAngle = newAngle;
+            interactionState.current.lastPanPosition = centerPos;
+        }
+        return clampTransform(newTransform, prev);
+    });
+  }, [clampTransform]);
+
+  const imageStyle: React.CSSProperties = useMemo(() => ({
     transform: `translate(${transform.x}px, ${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale}) scaleX(${transform.flipX ? -1 : 1}) scaleY(${transform.flipY ? -1 : 1})`,
     transformOrigin: 'center center',
     transition: isInteracting.current ? 'none' : 'transform 0.1s ease-out',
-  };
+  }), [transform, isInteracting.current]);
 
   const containerEventHandlers = {
     onMouseDown: (e: React.MouseEvent) => onInteractionStart(e.clientX, e.clientY),

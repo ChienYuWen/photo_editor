@@ -1,4 +1,3 @@
-
 import type { Filter, Frame } from './types';
 
 export const FILTERS: Filter[] = [
@@ -14,11 +13,11 @@ export const FILTERS: Filter[] = [
 
 export const FRAMES: Frame[] = [
   { name: 'None', class: '' },
-  { name: 'Simple White', class: 'p-2 bg-white' },
-  { name: 'Simple Black', class: 'p-2 bg-black' },
-  { name: 'Elegant', class: 'p-4 bg-white shadow-lg shadow-black/50' },
-  { name: 'Wooden', class: 'p-4 bg-[#855B32] border-4 border-[#5A3D20]' },
-  { name: 'Polaroid', class: 'p-2 pb-12 bg-gray-100 shadow-md shadow-black/30' },
-  { name: 'Thin Line', class: 'p-1 bg-transparent border-2 border-white' },
-  { name: 'Grunge', class: 'p-3 border-4 border-double border-gray-500' },
+  { name: 'Simple White', class: 'border-[8px] border-white' },
+  { name: 'Simple Black', class: 'border-[8px] border-black' },
+  { name: 'Elegant', class: 'border-[16px] border-white shadow-lg shadow-black/50' },
+  { name: 'Wooden', class: 'border-[16px] border-[#855B32] ring-4 ring-inset ring-[#5A3D20]' },
+  { name: 'Polaroid', class: 'border-solid border-gray-100 border-x-[10px] border-t-[10px] border-b-[50px] shadow-md shadow-black/30' },
+  { name: 'Thin Line', class: 'border-2 border-white' },
+  { name: 'Grunge', class: 'border-[12px] border-double border-gray-500' },
 ];

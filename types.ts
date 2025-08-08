@@ -1,4 +1,3 @@
-
 export interface Filter {
   name: string;
   class: string;

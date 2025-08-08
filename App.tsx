@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import ImageUploader from './components/ImageUploader';
 import Editor from './components/Editor';

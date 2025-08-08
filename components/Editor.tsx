@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
-import type { Filter, Frame, Transform } from '../types';
+import type { Filter, Frame } from '../types';
 import { FILTERS, FRAMES } from '../constants';
 import { useImageTransform } from '../hooks/useImageTransform';
 import SelectorPanel from './SelectorPanel';
@@ -29,7 +29,6 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [frameBounds, setFrameBounds] = useState<{width: number, height: number}>();
   
   const printFrameRef = useRef<HTMLDivElement>(null);
-  const [fineRotation, setFineRotation] = useState(0);
 
   const { 
     containerRef, 
@@ -81,14 +80,10 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     const printContainer = document.createElement('div');
     printContainer.style.position = 'absolute';
     printContainer.style.left = '-9999px';
-    printContainer.style.display = 'inline-block';
+    printContainer.style.width = `${frameBounds.width}px`;
+    printContainer.style.height = `${frameBounds.height}px`;
+    printContainer.style.overflow = 'hidden';
     printContainer.className = activeFrame.class;
-    
-    const imageViewport = document.createElement('div');
-    imageViewport.style.width = `${frameBounds.width}px`;
-    imageViewport.style.height = `${frameBounds.height}px`;
-    imageViewport.style.overflow = 'hidden';
-    imageViewport.style.position = 'relative';
     
     const imageContainer = document.createElement('div');
     imageContainer.style.width = '100%';
@@ -111,8 +106,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     scaledImage.style.transform = `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale}) scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})`;
 
     imageContainer.appendChild(scaledImage);
-    imageViewport.appendChild(imageContainer);
-    printContainer.appendChild(imageViewport);
+    printContainer.appendChild(imageContainer);
     document.body.appendChild(printContainer);
 
     html2canvas(printContainer, {
@@ -139,14 +133,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     { id: 'redact', icon: RedactIcon, name: 'Redact' },
   ] as const;
   
-  const handleFineRotationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseFloat(e.target.value);
-    setFineRotation(value);
-    setRotation(transform.rotation - fineRotation + value);
-  };
-  
-  const handleFineRotationEnd = () => {
-    setFineRotation(0);
+  const handleRotationSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setRotation(parseFloat(e.target.value));
   };
 
   return (
@@ -194,17 +182,13 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                     />
                 </div>
 
+                {/* The overlay for dimming, border, and grid lines. This defines the actual crop area. */}
                 <div
                     ref={printFrameRef}
-                    className="absolute w-4/5 aspect-[4/3] max-w-full max-h-full pointer-events-none"
+                    className={`absolute w-4/5 aspect-[4/3] max-w-full max-h-full pointer-events-none box-content ${activeFrame.class}`}
                     style={{ boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)' }}
                 >
-                    <div className={`absolute inset-0 w-full h-full pointer-events-none border-2 border-white/80 ${activeFrame.class}`} style={{
-                        mask: 'linear-gradient(white,white) padding-box, linear-gradient(white,white) content-box',
-                        maskComposite: 'exclude',
-                        WebkitMask: 'linear-gradient(white,white) padding-box, linear-gradient(white,white) content-box',
-                        WebkitMaskComposite: 'xor',
-                    }}/>
+                    <div className="absolute inset-0 w-full h-full pointer-events-none border border-white/50" />
                     {/* Rule of Thirds Grid */}
                     <div className="absolute top-0 bottom-0 left-1/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
                     <div className="absolute top-0 bottom-0 left-2/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
@@ -220,10 +204,13 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                 <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
                 <div className="flex items-center gap-2 w-48">
                     <span className="text-sm w-12 text-center">{Math.round(transform.rotation)}°</span>
-                    <input type="range" min="-45" max="45" step="0.5" value={fineRotation}
-                      onChange={handleFineRotationChange}
-                      onMouseUp={handleFineRotationEnd}
-                      onTouchEnd={handleFineRotationEnd}
+                    <input 
+                      type="range" 
+                      min="-180" 
+                      max="180" 
+                      step="0.5" 
+                      value={transform.rotation}
+                      onChange={handleRotationSliderChange}
                       className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
                     />
                 </div>
