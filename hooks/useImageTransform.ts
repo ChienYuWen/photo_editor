@@ -161,7 +161,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
-    if (!isInteracting.current) return;
+    if (!isInteracting.current || !containerRef.current) return;
     
     setTransform(prev => {
         let newTransform = { ...prev };
@@ -186,29 +186,30 @@ export const useImageTransform = (props: UseImageTransformProps) => {
             
             const scaleFactor = newDist / interactionState.current.lastTouchDist;
             const angleDelta = newAngle - interactionState.current.lastTouchAngle;
-            
-            newTransform.scale *= scaleFactor;
-            newTransform.rotation += angleDelta;
-            
-            const dx = centerPos.x - interactionState.current.lastPanPosition.x;
-            const dy = centerPos.y - interactionState.current.lastPanPosition.y;
-
-            const angleRad = -prev.rotation * (Math.PI / 180);
-            const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
-            const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
-
-            newTransform.x += rotatedDx;
-            newTransform.y += rotatedDy;
+            const panDx = centerPos.x - interactionState.current.lastPanPosition.x;
+            const panDy = centerPos.y - interactionState.current.lastPanPosition.y;
 
             const rect = containerRef.current!.getBoundingClientRect();
-            const mouseX = centerPos.x - rect.left - rect.width / 2;
-            const mouseY = centerPos.y - rect.top - rect.height / 2;
-
-            const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
-            const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
+            const pivotX_container = centerPos.x - rect.left - rect.width / 2;
+            const pivotY_container = centerPos.y - rect.top - rect.height / 2;
             
-            newTransform.x -= (rotatedMouseX - newTransform.x) * (scaleFactor - 1);
-            newTransform.y -= (rotatedMouseY - newTransform.y) * (scaleFactor - 1);
+            const angleRad_prev = -prev.rotation * (Math.PI / 180);
+            const rotatedPivotX = pivotX_container * Math.cos(angleRad_prev) - pivotY_container * Math.sin(angleRad_prev);
+            const rotatedPivotY = pivotX_container * Math.sin(angleRad_prev) + pivotY_container * Math.cos(angleRad_prev);
+            
+            const zoomPanOffsetX = (prev.x - rotatedPivotX) * (scaleFactor - 1);
+            const zoomPanOffsetY = (prev.y - rotatedPivotY) * (scaleFactor - 1);
+
+            const rotatedPanDx = panDx * Math.cos(angleRad_prev) - panDy * Math.sin(angleRad_prev);
+            const rotatedPanDy = panDx * Math.sin(angleRad_prev) + panDy * Math.cos(angleRad_prev);
+
+            newTransform = {
+                ...prev,
+                scale: prev.scale * scaleFactor,
+                rotation: prev.rotation + angleDelta,
+                x: prev.x + rotatedPanDx + zoomPanOffsetX,
+                y: prev.y + rotatedPanDy + zoomPanOffsetY,
+            };
 
             interactionState.current.lastTouchDist = newDist;
             interactionState.current.lastTouchAngle = newAngle;
