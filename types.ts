@@ -16,3 +16,14 @@ export interface Transform {
   flipX: boolean;
   flipY: boolean;
 }
+
+export interface Sticker {
+  id: string;
+  src: string; // base64 data url
+  x: number; // position relative to the frame center
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  scale: number;
+}

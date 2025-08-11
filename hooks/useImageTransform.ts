@@ -86,10 +86,12 @@ export const useImageTransform = (props: UseImageTransformProps) => {
   }, [imageBounds, frameBounds, clampTransform]);
 
   const rotateBy = useCallback((degrees: number) => {
+    interactionState.current.pivot = { x: 0, y: 0 };
     setTransform(prev => clampTransform({ ...prev, rotation: prev.rotation + degrees }));
   }, [clampTransform]);
 
   const setRotation = useCallback((degrees: number) => {
+    interactionState.current.pivot = { x: 0, y: 0 };
     setTransform(prev => clampTransform({ ...prev, rotation: degrees }));
   }, [clampTransform]);
 

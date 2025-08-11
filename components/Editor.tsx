@@ -1,12 +1,13 @@
 import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
-import type { Filter, Frame } from '../types';
+import { GoogleGenAI } from '@google/genai';
+import type { Filter, Frame, Sticker } from '../types';
 import { FILTERS, FRAMES } from '../constants';
 import { useImageTransform } from '../hooks/useImageTransform';
 import SelectorPanel from './SelectorPanel';
 import FinalImageModal from './FinalImageModal';
 import { 
   TuneIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
-  RotateCcwIcon, RotateCwIcon, FlipHorizontalIcon 
+  RotateCcwIcon, RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon
 } from './icons';
 
 declare const html2canvas: any;
@@ -29,12 +30,21 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [frameBounds, setFrameBounds] = useState<{width: number, height: number}>();
   
   const printFrameRef = useRef<HTMLDivElement>(null);
+  
+  // Sticker state
+  const [stickers, setStickers] = useState<Sticker[]>([]);
+  const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
+  const [stickerPrompt, setStickerPrompt] = useState<string>('A cute cat wearing sunglasses');
+  const [isGeneratingStickers, setIsGeneratingStickers] = useState(false);
+  const [generatedStickers, setGeneratedStickers] = useState<string[]>([]);
+  const [stickerError, setStickerError] = useState<string | null>(null);
+  const [draggingSticker, setDraggingSticker] = useState<{id: string, startX: number, startY: number, mouseStartX: number, mouseStartY: number} | null>(null);
 
   const { 
     containerRef, 
     transform, 
     imageStyle, 
-    containerEventHandlers, 
+    containerEventHandlers: imageTransformHandlers, 
     resetTransform, 
     rotateBy, 
     setRotation, 
@@ -72,95 +82,206 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     }
   }, [imageBounds, frameBounds, resetTransform]);
 
+  const handleGenerateStickers = useCallback(async () => {
+    if (!stickerPrompt || !process.env.API_KEY) {
+        setStickerError("Please enter a prompt and ensure your API key is set.");
+        return;
+    }
+    setIsGeneratingStickers(true);
+    setStickerError(null);
+    setGeneratedStickers([]);
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateImages({
+            model: 'imagen-3.0-generate-002',
+            prompt: `${stickerPrompt}, sticker, simple, vector art, transparent background`,
+            config: {
+                numberOfImages: 4,
+                outputMimeType: 'image/png',
+            },
+        });
+        
+        const imageSrcs = response.generatedImages.map(img => `data:image/png;base64,${img.image.imageBytes}`);
+        setGeneratedStickers(imageSrcs);
+
+    } catch(e) {
+        console.error("Sticker generation failed:", e);
+        setStickerError("Sorry, couldn't generate stickers. Please try a different prompt.");
+    } finally {
+        setIsGeneratingStickers(false);
+    }
+  }, [stickerPrompt]);
+  
+  const handleAddSticker = (src: string) => {
+    const newSticker: Sticker = {
+      id: crypto.randomUUID(),
+      src,
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 120,
+      rotation: 0,
+      scale: 1,
+    };
+    setStickers(prev => [...prev, newSticker]);
+    setActiveStickerId(newSticker.id);
+  };
+
+  const handleDeleteSticker = (id: string) => {
+    setStickers(prev => prev.filter(s => s.id !== id));
+    setActiveStickerId(null);
+  };
+  
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const stickerId = target.dataset.stickerId;
+
+    if (stickerId) {
+        e.stopPropagation();
+        const sticker = stickers.find(s => s.id === stickerId);
+        if (sticker) {
+            setActiveStickerId(stickerId);
+            setDraggingSticker({
+                id: stickerId,
+                startX: sticker.x,
+                startY: sticker.y,
+                mouseStartX: e.clientX,
+                mouseStartY: e.clientY
+            });
+        }
+    } else {
+        setActiveStickerId(null);
+        imageTransformHandlers.onMouseDown(e);
+    }
+  }, [stickers, imageTransformHandlers]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (draggingSticker) {
+        const dx = e.clientX - draggingSticker.mouseStartX;
+        const dy = e.clientY - draggingSticker.mouseStartY;
+        
+        setStickers(prev => prev.map(s => 
+            s.id === draggingSticker.id 
+                ? { ...s, x: draggingSticker.startX + dx, y: draggingSticker.startY + dy }
+                : s
+        ));
+    } else {
+        imageTransformHandlers.onMouseMove(e);
+    }
+  }, [draggingSticker, imageTransformHandlers]);
+
+  const handleMouseUp = useCallback(() => {
+    setDraggingSticker(null);
+    imageTransformHandlers.onMouseUp();
+  }, [imageTransformHandlers]);
+
 
   const handlePrint = useCallback(async () => {
     if (!imageBounds || !frameBounds) return;
     setIsProcessing(true);
-    let printContainer: HTMLDivElement | null = null;
+
+    const outputResolutionMultiplier = 2;
+    const outputWidth = frameBounds.width * outputResolutionMultiplier;
+    const outputHeight = frameBounds.height * outputResolutionMultiplier;
+
+    let finalImageContainer: HTMLDivElement | null = null;
 
     try {
-      // Step 1: Pre-render the image with the filter on a separate canvas ("baking" the filter)
-      const filteredImageSrc = await new Promise<string>((resolve, reject) => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-          if (!activeFilter.style) {
-            resolve(imageSrc); // No filter, use original image
-            return;
-          }
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            return reject(new Error('Could not get canvas context'));
-          }
-          canvas.width = img.naturalWidth;
-          canvas.height = img.naturalHeight;
-          ctx.filter = activeFilter.style;
-          ctx.drawImage(img, 0, 0);
-          resolve(canvas.toDataURL('image/png'));
-        };
-        img.onerror = () => reject(new Error('Failed to load image for canvas filter baking'));
-        img.src = imageSrc;
-      });
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const image = new Image();
+            image.crossOrigin = 'anonymous';
+            image.onload = () => resolve(image);
+            image.onerror = () => reject(new Error('Failed to load image for rendering.'));
+            image.src = imageSrc;
+        });
 
-      // Step 2: Use the pre-filtered image with html2canvas for transforms & frames
-      printContainer = document.createElement('div');
-      printContainer.style.position = 'absolute';
-      printContainer.style.left = '-9999px';
-      printContainer.style.width = `${frameBounds.width}px`;
-      printContainer.style.height = `${frameBounds.height}px`;
-      printContainer.style.overflow = 'hidden';
-      printContainer.className = activeFrame.class;
-      
-      const imageContainer = document.createElement('div');
-      imageContainer.style.width = '100%';
-      imageContainer.style.height = '100%';
-      imageContainer.style.position = 'absolute';
-      imageContainer.style.display = 'flex';
-      imageContainer.style.alignItems = 'center';
-      imageContainer.style.justifyContent = 'center';
-      
-      const imageToRender = document.createElement('div');
-      imageToRender.style.width = `${imageBounds.width}px`;
-      imageToRender.style.height = `${imageBounds.height}px`;
-      imageToRender.style.flexShrink = '0';
-      imageToRender.style.backgroundImage = `url(${filteredImageSrc})`;
-      imageToRender.style.backgroundSize = 'contain';
-      imageToRender.style.backgroundRepeat = 'no-repeat';
-      imageToRender.style.backgroundPosition = 'center';
-      imageToRender.style.transformOrigin = 'center center';
-      
-      const { x, y, scale, rotation, flipX, flipY } = transform;
-      // Add translateZ(0) to promote to a compositing layer for better transform rendering
-      imageToRender.style.transform = `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale}) scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1}) translateZ(0px)`;
+        const canvas = document.createElement('canvas');
+        canvas.width = outputWidth;
+        canvas.height = outputHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Could not get canvas context');
+        
+        ctx.imageSmoothingQuality = 'high';
+        if (activeFilter.style) ctx.filter = activeFilter.style;
 
-      imageContainer.appendChild(imageToRender);
-      printContainer.appendChild(imageContainer);
-      document.body.appendChild(printContainer);
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        const { x, y, scale, rotation, flipX, flipY } = transform;
+        ctx.translate(x * outputResolutionMultiplier, y * outputResolutionMultiplier);
+        ctx.rotate(rotation * (Math.PI / 180));
+        ctx.scale(scale, scale);
+        ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+        ctx.drawImage(img, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
+        ctx.restore();
 
-      const finalCanvas = await html2canvas(printContainer, {
-          useCORS: true,
-          backgroundColor: null,
-          logging: false,
-      });
-      setFinalImage(finalCanvas.toDataURL('image/png'));
+        const stickerImages = await Promise.all(stickers.map(s => new Promise<HTMLImageElement>((resolve, reject) => {
+            const stickerImg = new Image();
+            stickerImg.crossOrigin = 'anonymous';
+            stickerImg.onload = () => resolve(stickerImg);
+            stickerImg.onerror = reject;
+            stickerImg.src = s.src;
+        })));
+
+        stickers.forEach((sticker, index) => {
+            const stickerImg = stickerImages[index];
+            const { x, y, width, height, scale, rotation } = sticker;
+            const canvasCenterX = canvas.width / 2;
+            const canvasCenterY = canvas.height / 2;
+            const drawX = canvasCenterX + x * outputResolutionMultiplier;
+            const drawY = canvasCenterY + y * outputResolutionMultiplier;
+            const drawWidth = width * scale * outputResolutionMultiplier;
+            const drawHeight = height * scale * outputResolutionMultiplier;
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.rotate(rotation * (Math.PI / 180));
+            ctx.drawImage(stickerImg, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+            ctx.restore();
+        });
+
+        const transformedImageSrc = canvas.toDataURL('image/png');
+
+        if (activeFrame.class && activeFrame.name !== 'None') {
+            finalImageContainer = document.createElement('div');
+            finalImageContainer.style.position = 'absolute';
+            finalImageContainer.style.left = '-9999px';
+            finalImageContainer.style.width = `${outputWidth}px`;
+            finalImageContainer.style.height = `${outputHeight}px`;
+            finalImageContainer.style.boxSizing = 'border-box';
+            finalImageContainer.className = activeFrame.class;
+            
+            const imageToRender = document.createElement('img');
+            imageToRender.style.width = '100%';
+            imageToRender.style.height = '100%';
+            imageToRender.style.display = 'block';
+            imageToRender.src = transformedImageSrc;
+
+            finalImageContainer.appendChild(imageToRender);
+            document.body.appendChild(finalImageContainer);
+
+            const finalCanvas = await html2canvas(finalImageContainer, {
+                useCORS: true, backgroundColor: null, logging: false, scale: 1,
+            });
+            setFinalImage(finalCanvas.toDataURL('image/png'));
+        } else {
+            setFinalImage(transformedImageSrc);
+        }
 
     } catch (err) {
         console.error("Oops, something went wrong!", err);
+        alert('An error occurred while generating the image. Please try again.');
     } finally {
-        if (printContainer) {
-            document.body.removeChild(printContainer);
-        }
+        if (finalImageContainer) document.body.removeChild(finalImageContainer);
         setIsProcessing(false);
     }
-  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, frameBounds]);
+  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, frameBounds, stickers]);
+
 
   const TOOLS = [
     { id: 'adjust', icon: TuneIcon, name: 'Adjust' },
     { id: 'filter', icon: FilterIcon, name: 'Filter' },
     { id: 'frame', icon: FrameIcon, name: 'Frame' },
-    { id: 'annotate', icon: PencilIcon, name: 'Annotate' },
     { id: 'sticker', icon: StickerIcon, name: 'Sticker' },
+    { id: 'annotate', icon: PencilIcon, name: 'Annotate' },
     { id: 'fill', icon: FillIcon, name: 'Fill' },
     { id: 'redact', icon: RedactIcon, name: 'Redact' },
   ] as const;
@@ -168,6 +289,9 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const handleRotationSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setRotation(parseFloat(e.target.value));
   };
+  
+  const enabledTools = ['adjust', 'filter', 'frame', 'sticker'];
+  const showOptionsPanel = enabledTools.includes(activeTool);
 
   return (
     <div className="w-full h-screen bg-gray-900 text-white flex flex-col">
@@ -187,103 +311,188 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
       </header>
       
       <div className="flex flex-1 overflow-hidden">
-        <aside className="w-20 bg-gray-800 flex flex-col items-center p-2 space-y-2">
-          {TOOLS.map(tool => (
-            <button
-              key={tool.id}
-              onClick={() => setActiveTool(tool.id)}
-              className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-              title={tool.name}
-              disabled={!['adjust', 'filter', 'frame'].includes(tool.id)}
+        <main 
+            ref={containerRef} 
+            className="flex-1 flex items-center justify-center p-4 relative overflow-hidden cursor-move touch-none" 
+            {...imageTransformHandlers} 
+            onMouseDown={handleMouseDown} 
+            onMouseMove={handleMouseMove} 
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+        >
+            <div className="absolute w-full h-full flex items-center justify-center">
+                <img
+                    src={imageSrc}
+                    alt="user content"
+                    className={`max-w-none select-none pointer-events-none flex-shrink-0`}
+                    style={{ ...imageStyle, filter: activeFilter.style }}
+                    draggable="false"
+                />
+            </div>
+
+            <div
+                ref={printFrameRef}
+                className={`absolute w-4/5 aspect-[4/3] max-w-full max-h-full pointer-events-none box-content ${activeFrame.class}`}
+                style={{ boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)' }}
             >
-              <tool.icon className={`w-6 h-6 mb-1 ${!['adjust', 'filter', 'frame'].includes(tool.id) ? 'opacity-50' : ''}`} />
-              <span className={`text-xs ${!['adjust', 'filter', 'frame'].includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
-            </button>
-          ))}
-        </aside>
-        
-        <div className="flex-1 flex flex-col overflow-hidden">
-            <main ref={containerRef} className="flex-1 flex items-center justify-center p-4 relative overflow-hidden cursor-move touch-none" {...containerEventHandlers}>
-                <div className="absolute w-full h-full flex items-center justify-center">
-                    <img
-                        src={imageSrc}
-                        alt="user content"
-                        className={`max-w-none select-none pointer-events-none flex-shrink-0`}
-                        style={{ ...imageStyle, filter: activeFilter.style }}
-                        draggable="false"
-                    />
-                </div>
+                <div className="absolute inset-0 w-full h-full pointer-events-none border border-white/50" />
+                <div className="absolute top-0 bottom-0 left-1/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
+                <div className="absolute top-0 bottom-0 left-2/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
+                <div className="absolute left-0 right-0 top-1/3 -translate-y-1/2 h-px bg-black/50 ring-1 ring-white/20" />
+                <div className="absolute left-0 right-0 top-2/3 -translate-y-1/2 h-px bg-black/50 ring-1 ring-white/20" />
+                
+                {/* Render Stickers */}
+                {frameBounds && stickers.map(sticker => (
+                  <div
+                    key={sticker.id}
+                    data-sticker-id={sticker.id}
+                    className={`absolute select-none ${activeStickerId === sticker.id ? 'border-2 border-dashed border-blue-400' : ''} cursor-grab`}
+                    style={{
+                      width: `${sticker.width * sticker.scale}px`,
+                      height: `${sticker.height * sticker.scale}px`,
+                      top: '50%',
+                      left: '50%',
+                      transform: `translate(-50%, -50%) translate(${sticker.x}px, ${sticker.y}px) rotate(${sticker.rotation}deg)`,
+                    }}
+                  >
+                     <img 
+                       src={sticker.src}
+                       alt="sticker"
+                       draggable="false"
+                       data-sticker-id={sticker.id}
+                       className="w-full h-full pointer-events-auto"
+                     />
+                     {activeStickerId === sticker.id && (
+                       <button 
+                         onClick={() => handleDeleteSticker(sticker.id)}
+                         className="absolute -top-3 -right-3 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 z-10 transition-transform hover:scale-110"
+                         aria-label="Delete sticker"
+                        >
+                         <Trash2Icon className="w-4 h-4" />
+                       </button>
+                     )}
+                  </div>
+                ))}
+            </div>
+        </main>
+      </div>
 
-                {/* The overlay for dimming, border, and grid lines. This defines the actual crop area. */}
-                <div
-                    ref={printFrameRef}
-                    className={`absolute w-4/5 aspect-[4/3] max-w-full max-h-full pointer-events-none box-content ${activeFrame.class}`}
-                    style={{ boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)' }}
-                >
-                    <div className="absolute inset-0 w-full h-full pointer-events-none border border-white/50" />
-                    {/* Rule of Thirds Grid */}
-                    <div className="absolute top-0 bottom-0 left-1/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
-                    <div className="absolute top-0 bottom-0 left-2/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
-                    <div className="absolute left-0 right-0 top-1/3 -translate-y-1/2 h-px bg-black/50 ring-1 ring-white/20" />
-                    <div className="absolute left-0 right-0 top-2/3 -translate-y-1/2 h-px bg-black/50 ring-1 ring-white/20" />
-                </div>
-            </main>
-
+      <footer className="bg-gray-800 shadow-inner z-10 border-t border-gray-700">
+        <div className={`transition-[max-height] duration-300 ease-in-out overflow-auto scrollbar-thin ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
+          <div className="w-full border-b border-gray-700/80">
             {activeTool === 'adjust' && (
-              <div className="bg-gray-800/80 backdrop-blur-sm p-3 flex justify-center items-center gap-4 border-t border-gray-700">
+              <div className="p-4 flex justify-center items-center gap-4">
                 <button onClick={() => rotateBy(-90)} title="Rotate Left" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCcwIcon className="w-6 h-6" /></button>
                 <button onClick={() => rotateBy(90)} title="Rotate Right" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCwIcon className="w-6 h-6" /></button>
                 <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
                 <div className="flex items-center gap-2 w-48">
                     <span className="text-sm w-12 text-center">{Math.round(transform.rotation)}°</span>
                     <input 
-                      type="range" 
-                      min="-180" 
-                      max="180" 
-                      step="0.5" 
-                      value={transform.rotation}
+                      type="range" min="-180" max="180" step="0.5" value={transform.rotation}
                       onChange={handleRotationSliderChange}
                       className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
                     />
                 </div>
               </div>
             )}
-        </div>
-        
-        <aside className={`w-80 bg-gray-800 p-4 transition-transform duration-300 ease-in-out overflow-y-auto ${(activeTool === 'filter' || activeTool === 'frame') ? 'translate-x-0' : 'translate-x-full absolute right-0 top-0 bottom-0 h-full'}`}>
-          {activeTool === 'filter' && (
-            <SelectorPanel
-              title="Filters"
-              options={FILTERS}
-              selectedOption={activeFilter}
-              onSelect={(option) => setActiveFilter(option)}
-              renderOption={(option, isSelected) => (
-                <div className="text-center">
-                  <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})`, filter: option.style }}>
-                  </div>
-                  <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
-                </div>
-              )}
-            />
-          )}
-           {activeTool === 'frame' && (
-             <SelectorPanel
-                title="Frames"
-                options={FRAMES}
-                selectedOption={activeFrame}
-                onSelect={(option) => setActiveFrame(option)}
-                renderOption={(option, isSelected) => (
-                  <div className="text-center">
-                    <div className={`w-20 h-20 flex items-center justify-center rounded-lg border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'}`}>
-                      <div className={`w-16 h-16 rounded-sm ${option.class} transition-all duration-200 bg-gray-500`}></div>
+            {activeTool === 'filter' && (
+              <div className="p-4">
+                <SelectorPanel
+                  title="Filters" options={FILTERS} selectedOption={activeFilter} onSelect={(option) => setActiveFilter(option)}
+                  renderOption={(option, isSelected) => (
+                    <div className="text-center">
+                      <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})`, filter: option.style }}>
+                      </div>
+                      <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
                     </div>
-                    <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
-                  </div>
-                )}
-            />
-          )}
-        </aside>
-      </div>
+                  )}
+                />
+              </div>
+            )}
+            {activeTool === 'frame' && (
+              <div className="p-4">
+                <SelectorPanel
+                  title="Frames" options={FRAMES} selectedOption={activeFrame} onSelect={(option) => setActiveFrame(option)}
+                  renderOption={(option, isSelected) => (
+                    <div className="text-center">
+                      <div className={`w-20 h-20 flex items-center justify-center rounded-lg border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'}`}>
+                        <div className={`w-16 h-16 rounded-sm ${option.class} transition-all duration-200 bg-gray-500`}></div>
+                      </div>
+                      <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
+                    </div>
+                  )}
+                />
+              </div>
+            )}
+            {activeTool === 'sticker' && (
+              <div className="p-4 h-52 flex items-start gap-4">
+                <div className="flex-shrink-0 w-72 h-full flex flex-col space-y-2">
+                    <h3 className="text-sm font-bold text-gray-400">AI Sticker Generator</h3>
+                    <textarea 
+                        value={stickerPrompt}
+                        onChange={(e) => setStickerPrompt(e.target.value)}
+                        placeholder="e.g., a robot holding a skateboard"
+                        className="w-full flex-grow p-2 rounded-md bg-gray-700 border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-sm resize-none"
+                    />
+                    <button 
+                        onClick={handleGenerateStickers}
+                        disabled={isGeneratingStickers || !stickerPrompt}
+                        className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                    >
+                        {isGeneratingStickers ? <SpinnerIcon className="w-5 h-5 animate-spin" /> : <SparklesIcon className="w-5 h-5" />}
+                        {isGeneratingStickers ? 'Generating...' : 'Generate Stickers'}
+                    </button>
+                    {stickerError && <p className="text-xs text-red-400 text-center">{stickerError}</p>}
+                </div>
+                <div className="flex-1 h-full bg-gray-900/50 rounded-lg">
+                    <div className="h-full overflow-y-auto scrollbar-thin p-2">
+                      {isGeneratingStickers && (
+                          <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 animate-pulse">
+                              {[...Array(12)].map((_,i) => <div key={i} className="w-full aspect-square bg-gray-700 rounded-md"></div>)}
+                          </div>
+                      )}
+                      {generatedStickers.length > 0 && (
+                          <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
+                              {generatedStickers.map((src, i) => (
+                                  <div key={i} onClick={() => handleAddSticker(src)} className="w-full aspect-square bg-gray-700/50 rounded-md cursor-pointer hover:ring-2 ring-indigo-400 transition-all overflow-hidden">
+                                      <img src={src} alt={`Generated sticker ${i+1}`} className="w-full h-full object-contain" />
+                                  </div>
+                              ))}
+                          </div>
+                      )}
+                      {!isGeneratingStickers && generatedStickers.length === 0 && (
+                          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                              Generated stickers will appear here.
+                          </div>
+                      )}
+                    </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-center p-2 space-x-1">
+          {TOOLS.map(tool => (
+            <button
+              key={tool.id}
+              onClick={() => {
+                if(activeTool === tool.id && (tool.id === 'filter' || tool.id === 'frame' || tool.id === 'sticker')) {
+                    setActiveTool('adjust');
+                } else {
+                    setActiveTool(tool.id)
+                }
+              }}
+              className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+              title={tool.name}
+              disabled={!enabledTools.includes(tool.id)}
+            >
+              <tool.icon className={`w-5 h-5 mb-1 ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`} />
+              <span className={`text-[11px] font-medium ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
+            </button>
+          ))}
+        </div>
+      </footer>
     </div>
   );
 };
