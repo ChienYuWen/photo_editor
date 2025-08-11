@@ -11,7 +11,6 @@ interface UseImageTransformProps {
   frameBounds?: Bounds;
 }
 
-const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 5;
 
 const normalizeAngle = (angle: number): number => {
@@ -46,7 +45,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
 
     const minScaleToCoverX = frameBounds.width / rotatedImgWidth;
     const minScaleToCoverY = frameBounds.height / rotatedImgHeight;
-    const minScale = Math.max(minScaleToCoverX, minScaleToCoverY, MIN_ZOOM);
+    const minScale = Math.max(minScaleToCoverX, minScaleToCoverY);
     
     const uncappedScale = t.scale;
     const clampedScale = Math.max(minScale, Math.min(uncappedScale, MAX_ZOOM));
