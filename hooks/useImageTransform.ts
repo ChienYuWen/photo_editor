@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import type { Transform } from '../types';
 
 interface Bounds {
@@ -242,5 +242,5 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     onTouchEnd: onInteractionEnd,
   };
 
-  return { containerRef, transform, imageStyle, containerEventHandlers, resetTransform, rotateBy, setRotation, flip };
+  return { containerRef, transform, setTransform, clampTransform, imageStyle, containerEventHandlers, resetTransform, rotateBy, setRotation, flip };
 };

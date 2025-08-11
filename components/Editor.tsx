@@ -42,7 +42,9 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
 
   const { 
     containerRef, 
-    transform, 
+    transform,
+    setTransform,
+    clampTransform,
     imageStyle, 
     containerEventHandlers: imageTransformHandlers, 
     resetTransform, 
@@ -81,6 +83,13 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         resetTransform();
     }
   }, [imageBounds, frameBounds, resetTransform]);
+  
+  useLayoutEffect(() => {
+    if (transform && frameBounds) {
+        setTransform(prev => clampTransform(prev));
+    }
+  }, [frameBounds, clampTransform, setTransform]);
+
 
   const handleGenerateStickers = useCallback(async () => {
     if (!stickerPrompt || !process.env.API_KEY) {
@@ -113,13 +122,16 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   }, [stickerPrompt]);
   
   const handleAddSticker = (src: string) => {
+    const frameWidth = printFrameRef.current?.clientWidth;
+    const stickerSize = frameWidth ? Math.max(80, frameWidth * 0.2) : 120;
+    
     const newSticker: Sticker = {
       id: crypto.randomUUID(),
       src,
       x: 0,
       y: 0,
-      width: 120,
-      height: 120,
+      width: stickerSize,
+      height: stickerSize,
       rotation: 0,
       scale: 1,
     };
@@ -156,19 +168,33 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   }, [stickers, imageTransformHandlers]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (draggingSticker) {
+    if (draggingSticker && frameBounds) {
         const dx = e.clientX - draggingSticker.mouseStartX;
         const dy = e.clientY - draggingSticker.mouseStartY;
         
-        setStickers(prev => prev.map(s => 
-            s.id === draggingSticker.id 
-                ? { ...s, x: draggingSticker.startX + dx, y: draggingSticker.startY + dy }
-                : s
-        ));
+        setStickers(prev => prev.map(s => {
+            if (s.id !== draggingSticker.id) return s;
+
+            const newPos = { 
+                x: draggingSticker.startX + dx,
+                y: draggingSticker.startY + dy 
+            };
+            
+            // Clamp position to be within the frame
+            const stickerHalfW = s.width * s.scale / 2;
+            const stickerHalfH = s.height * s.scale / 2;
+            const frameHalfW = frameBounds.width / 2;
+            const frameHalfH = frameBounds.height / 2;
+
+            newPos.x = Math.max(-frameHalfW + stickerHalfW, Math.min(newPos.x, frameHalfW - stickerHalfW));
+            newPos.y = Math.max(-frameHalfH + stickerHalfH, Math.min(newPos.y, frameHalfH - stickerHalfH));
+
+            return { ...s, x: newPos.x, y: newPos.y };
+        }));
     } else {
         imageTransformHandlers.onMouseMove(e);
     }
-  }, [draggingSticker, imageTransformHandlers]);
+  }, [draggingSticker, imageTransformHandlers, frameBounds]);
 
   const handleMouseUp = useCallback(() => {
     setDraggingSticker(null);
@@ -177,12 +203,14 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
 
 
   const handlePrint = useCallback(async () => {
-    if (!imageBounds || !frameBounds) return;
+    const printFrame = printFrameRef.current;
+    if (!imageBounds || !printFrame) return;
     setIsProcessing(true);
 
+    const currentFrameBounds = printFrame.getBoundingClientRect();
     const outputResolutionMultiplier = 2;
-    const outputWidth = frameBounds.width * outputResolutionMultiplier;
-    const outputHeight = frameBounds.height * outputResolutionMultiplier;
+    const outputWidth = currentFrameBounds.width * outputResolutionMultiplier;
+    const outputHeight = currentFrameBounds.height * outputResolutionMultiplier;
 
     let finalImageContainer: HTMLDivElement | null = null;
 
@@ -202,9 +230,10 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         if (!ctx) throw new Error('Could not get canvas context');
         
         ctx.imageSmoothingQuality = 'high';
-        if (activeFilter.style) ctx.filter = activeFilter.style;
-
+        
+        // Draw main image with filter
         ctx.save();
+        if (activeFilter.style) ctx.filter = activeFilter.style;
         ctx.translate(canvas.width / 2, canvas.height / 2);
         const { x, y, scale, rotation, flipX, flipY } = transform;
         ctx.translate(x * outputResolutionMultiplier, y * outputResolutionMultiplier);
@@ -214,6 +243,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         ctx.drawImage(img, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
         ctx.restore();
 
+        // Reset filter and draw stickers
+        ctx.filter = 'none';
         const stickerImages = await Promise.all(stickers.map(s => new Promise<HTMLImageElement>((resolve, reject) => {
             const stickerImg = new Image();
             stickerImg.crossOrigin = 'anonymous';
@@ -273,7 +304,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         if (finalImageContainer) document.body.removeChild(finalImageContainer);
         setIsProcessing(false);
     }
-  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, frameBounds, stickers]);
+  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, stickers]);
 
 
   const TOOLS = [
@@ -291,7 +322,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   };
   
   const enabledTools = ['adjust', 'filter', 'frame', 'sticker'];
-  const showOptionsPanel = enabledTools.includes(activeTool);
+  const showOptionsPanel = enabledTools.includes(activeTool) && activeTool !== 'adjust';
 
   return (
     <div className="w-full h-screen bg-gray-900 text-white flex flex-col">
@@ -303,28 +334,28 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         </button>
         <button
           onClick={handlePrint}
-          disabled={isProcessing || !imageBounds || !frameBounds}
+          disabled={isProcessing || !imageBounds}
           className="bg-yellow-400 hover:bg-yellow-500 disabled:bg-yellow-300 disabled:cursor-not-allowed text-black font-bold py-2 px-6 rounded-lg transition-colors duration-300"
         >
           {isProcessing ? 'Processing...' : 'Done'}
         </button>
       </header>
       
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex-1 grid grid-rows-1 grid-cols-1 overflow-hidden">
         <main 
             ref={containerRef} 
-            className="flex-1 flex items-center justify-center p-4 relative overflow-hidden cursor-move touch-none" 
+            className="row-start-1 col-start-1 flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
             {...imageTransformHandlers} 
             onMouseDown={handleMouseDown} 
             onMouseMove={handleMouseMove} 
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
         >
-            <div className="absolute w-full h-full flex items-center justify-center">
+            <div className="absolute w-full h-full flex items-center justify-center pointer-events-none">
                 <img
                     src={imageSrc}
                     alt="user content"
-                    className={`max-w-none select-none pointer-events-none flex-shrink-0`}
+                    className={`max-w-none select-none flex-shrink-0`}
                     style={{ ...imageStyle, filter: activeFilter.style }}
                     draggable="false"
                 />
@@ -364,7 +395,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                      />
                      {activeStickerId === sticker.id && (
                        <button 
-                         onClick={() => handleDeleteSticker(sticker.id)}
+                         onClick={(e) => { e.stopPropagation(); handleDeleteSticker(sticker.id); }}
                          className="absolute -top-3 -right-3 bg-red-600 hover:bg-red-700 text-white rounded-full p-1 z-10 transition-transform hover:scale-110"
                          aria-label="Delete sticker"
                         >
@@ -375,13 +406,109 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                 ))}
             </div>
         </main>
-      </div>
+        
+        <footer className="row-start-1 col-start-1 self-end w-full bg-gray-800 shadow-inner z-10 border-t border-gray-700">
+          <div className={`transition-[max-height] duration-300 ease-in-out overflow-hidden ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
+            <div className="w-full border-b border-gray-700/80">
+              {activeTool === 'filter' && (
+                <div className="p-4">
+                  <SelectorPanel
+                    title="Filters" options={FILTERS} selectedOption={activeFilter} onSelect={(option) => setActiveFilter(option)}
+                    renderOption={(option, isSelected) => (
+                      <div className="text-center">
+                        <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})`, filter: option.style }}>
+                        </div>
+                        <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
+                      </div>
+                    )}
+                  />
+                </div>
+              )}
+              {activeTool === 'frame' && (
+                <div className="p-4">
+                  <SelectorPanel
+                    title="Frames" options={FRAMES} selectedOption={activeFrame} onSelect={(option) => setActiveFrame(option)}
+                    renderOption={(option, isSelected) => (
+                      <div className="text-center">
+                        <div className={`w-20 h-20 flex items-center justify-center rounded-lg border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'}`}>
+                          <div className={`w-16 h-16 rounded-sm ${option.class} transition-all duration-200 bg-gray-500`}></div>
+                        </div>
+                        <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
+                      </div>
+                    )}
+                  />
+                </div>
+              )}
+              {activeTool === 'sticker' && (
+                <div className="p-4 h-52 flex items-start gap-4">
+                  <div className="flex-shrink-0 w-72 h-full flex flex-col space-y-2">
+                      <h3 className="text-sm font-bold text-gray-400">AI Sticker Generator</h3>
+                      <textarea 
+                          value={stickerPrompt}
+                          onChange={(e) => setStickerPrompt(e.target.value)}
+                          placeholder="e.g., a robot holding a skateboard"
+                          className="w-full flex-grow p-2 rounded-md bg-gray-700 border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-sm resize-none"
+                      />
+                      <button 
+                          onClick={handleGenerateStickers}
+                          disabled={isGeneratingStickers || !stickerPrompt}
+                          className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                      >
+                          {isGeneratingStickers ? <SpinnerIcon className="w-5 h-5 animate-spin" /> : <SparklesIcon className="w-5 h-5" />}
+                          {isGeneratingStickers ? 'Generating...' : 'Generate Stickers'}
+                      </button>
+                      {stickerError && <p className="text-xs text-red-400 text-center">{stickerError}</p>}
+                  </div>
+                  <div className="flex-1 h-full bg-gray-900/50 rounded-lg">
+                      <div className="h-full overflow-y-auto scrollbar-thin p-2">
+                        {isGeneratingStickers && (
+                            <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 animate-pulse">
+                                {[...Array(12)].map((_,i) => <div key={i} className="w-full aspect-square bg-gray-700 rounded-md"></div>)}
+                            </div>
+                        )}
+                        {generatedStickers.length > 0 && (
+                            <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
+                                {generatedStickers.map((src, i) => (
+                                    <div key={i} onClick={() => handleAddSticker(src)} className="w-full aspect-square bg-gray-700/50 rounded-md cursor-pointer hover:ring-2 ring-indigo-400 transition-all overflow-hidden">
+                                        <img src={src} alt={`Generated sticker ${i+1}`} className="w-full h-full object-contain" />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {!isGeneratingStickers && generatedStickers.length === 0 && (
+                            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                                Generated stickers will appear here.
+                            </div>
+                        )}
+                      </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
-      <footer className="bg-gray-800 shadow-inner z-10 border-t border-gray-700">
-        <div className={`transition-[max-height] duration-300 ease-in-out overflow-auto scrollbar-thin ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
-          <div className="w-full border-b border-gray-700/80">
-            {activeTool === 'adjust' && (
-              <div className="p-4 flex justify-center items-center gap-4">
+          <div className="flex items-center justify-center p-2 space-x-1">
+            {TOOLS.map(tool => (
+              <button
+                key={tool.id}
+                onClick={() => {
+                  if(activeTool === tool.id) {
+                      setActiveTool(enabledTools.includes(tool.id) && tool.id !== 'adjust' ? 'adjust' : tool.id);
+                  } else {
+                      setActiveTool(tool.id)
+                  }
+                }}
+                className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                title={tool.name}
+                disabled={!enabledTools.includes(tool.id)}
+              >
+                <tool.icon className={`w-5 h-5 mb-1 ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`} />
+                <span className={`text-[11px] font-medium ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
+              </button>
+            ))}
+          </div>
+           {activeTool === 'adjust' && (
+              <div className="p-4 flex justify-center items-center gap-4 border-t border-gray-700/80">
                 <button onClick={() => rotateBy(-90)} title="Rotate Left" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCcwIcon className="w-6 h-6" /></button>
                 <button onClick={() => rotateBy(90)} title="Rotate Right" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCwIcon className="w-6 h-6" /></button>
                 <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
@@ -395,104 +522,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                 </div>
               </div>
             )}
-            {activeTool === 'filter' && (
-              <div className="p-4">
-                <SelectorPanel
-                  title="Filters" options={FILTERS} selectedOption={activeFilter} onSelect={(option) => setActiveFilter(option)}
-                  renderOption={(option, isSelected) => (
-                    <div className="text-center">
-                      <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})`, filter: option.style }}>
-                      </div>
-                      <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
-                    </div>
-                  )}
-                />
-              </div>
-            )}
-            {activeTool === 'frame' && (
-              <div className="p-4">
-                <SelectorPanel
-                  title="Frames" options={FRAMES} selectedOption={activeFrame} onSelect={(option) => setActiveFrame(option)}
-                  renderOption={(option, isSelected) => (
-                    <div className="text-center">
-                      <div className={`w-20 h-20 flex items-center justify-center rounded-lg border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'}`}>
-                        <div className={`w-16 h-16 rounded-sm ${option.class} transition-all duration-200 bg-gray-500`}></div>
-                      </div>
-                      <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
-                    </div>
-                  )}
-                />
-              </div>
-            )}
-            {activeTool === 'sticker' && (
-              <div className="p-4 h-52 flex items-start gap-4">
-                <div className="flex-shrink-0 w-72 h-full flex flex-col space-y-2">
-                    <h3 className="text-sm font-bold text-gray-400">AI Sticker Generator</h3>
-                    <textarea 
-                        value={stickerPrompt}
-                        onChange={(e) => setStickerPrompt(e.target.value)}
-                        placeholder="e.g., a robot holding a skateboard"
-                        className="w-full flex-grow p-2 rounded-md bg-gray-700 border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-sm resize-none"
-                    />
-                    <button 
-                        onClick={handleGenerateStickers}
-                        disabled={isGeneratingStickers || !stickerPrompt}
-                        className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                    >
-                        {isGeneratingStickers ? <SpinnerIcon className="w-5 h-5 animate-spin" /> : <SparklesIcon className="w-5 h-5" />}
-                        {isGeneratingStickers ? 'Generating...' : 'Generate Stickers'}
-                    </button>
-                    {stickerError && <p className="text-xs text-red-400 text-center">{stickerError}</p>}
-                </div>
-                <div className="flex-1 h-full bg-gray-900/50 rounded-lg">
-                    <div className="h-full overflow-y-auto scrollbar-thin p-2">
-                      {isGeneratingStickers && (
-                          <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 animate-pulse">
-                              {[...Array(12)].map((_,i) => <div key={i} className="w-full aspect-square bg-gray-700 rounded-md"></div>)}
-                          </div>
-                      )}
-                      {generatedStickers.length > 0 && (
-                          <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
-                              {generatedStickers.map((src, i) => (
-                                  <div key={i} onClick={() => handleAddSticker(src)} className="w-full aspect-square bg-gray-700/50 rounded-md cursor-pointer hover:ring-2 ring-indigo-400 transition-all overflow-hidden">
-                                      <img src={src} alt={`Generated sticker ${i+1}`} className="w-full h-full object-contain" />
-                                  </div>
-                              ))}
-                          </div>
-                      )}
-                      {!isGeneratingStickers && generatedStickers.length === 0 && (
-                          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                              Generated stickers will appear here.
-                          </div>
-                      )}
-                    </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-center p-2 space-x-1">
-          {TOOLS.map(tool => (
-            <button
-              key={tool.id}
-              onClick={() => {
-                if(activeTool === tool.id && (tool.id === 'filter' || tool.id === 'frame' || tool.id === 'sticker')) {
-                    setActiveTool('adjust');
-                } else {
-                    setActiveTool(tool.id)
-                }
-              }}
-              className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-              title={tool.name}
-              disabled={!enabledTools.includes(tool.id)}
-            >
-              <tool.icon className={`w-5 h-5 mb-1 ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`} />
-              <span className={`text-[11px] font-medium ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
-            </button>
-          ))}
-        </div>
-      </footer>
+        </footer>
+      </div>
     </div>
   );
 };
