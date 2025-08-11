@@ -29,14 +29,14 @@ export const useImageTransform = (props: UseImageTransformProps) => {
   const interactionState = useRef({
     lastPanPosition: { x: 0, y: 0 },
     lastTouchDist: 0,
-    lastTouchAngle: 0
+    lastTouchAngle: 0,
+    pivot: { x: 0, y: 0 }, // Pivot in image's coordinate system
   });
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const clampTransform = useCallback((t: Transform, prevT?: Transform): Transform => {
+  const clampTransform = useCallback((t: Transform): Transform => {
     if (!imageBounds || !frameBounds) return t;
 
-    const prevTransform = prevT || t;
     const angleRad = t.rotation * (Math.PI / 180);
     const cos = Math.cos(angleRad);
     const sin = Math.sin(angleRad);
@@ -48,14 +48,16 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     const minScaleToCoverY = frameBounds.height / rotatedImgHeight;
     const minScale = Math.max(minScaleToCoverX, minScaleToCoverY, MIN_ZOOM);
     
-    let clampedScale = Math.max(minScale, Math.min(t.scale, MAX_ZOOM));
-    
+    const uncappedScale = t.scale;
+    const clampedScale = Math.max(minScale, Math.min(uncappedScale, MAX_ZOOM));
+
     let { x, y } = t;
 
-    if (clampedScale > prevTransform.scale) {
-      const scaleRatio = clampedScale / prevTransform.scale;
-      x *= scaleRatio;
-      y *= scaleRatio;
+    if (clampedScale !== uncappedScale) {
+        const pivot = interactionState.current.pivot;
+        const scaleRatio = clampedScale / uncappedScale;
+        x = pivot.x + (t.x - pivot.x) * scaleRatio;
+        y = pivot.y + (t.y - pivot.y) * scaleRatio;
     }
 
     const imgDisplayWidth = imageBounds.width * clampedScale;
@@ -85,15 +87,15 @@ export const useImageTransform = (props: UseImageTransformProps) => {
   }, [imageBounds, frameBounds, clampTransform]);
 
   const rotateBy = useCallback((degrees: number) => {
-    setTransform(prev => clampTransform({ ...prev, rotation: prev.rotation + degrees }, prev));
+    setTransform(prev => clampTransform({ ...prev, rotation: prev.rotation + degrees }));
   }, [clampTransform]);
 
   const setRotation = useCallback((degrees: number) => {
-    setTransform(prev => clampTransform({ ...prev, rotation: degrees }, prev));
+    setTransform(prev => clampTransform({ ...prev, rotation: degrees }));
   }, [clampTransform]);
 
   const flip = useCallback((axis: 'x' | 'y') => {
-      setTransform(prev => clampTransform({ ...prev, flipX: axis === 'x' ? !prev.flipX : prev.flipX, flipY: axis === 'y' ? !prev.flipY : prev.flipY }, prev));
+      setTransform(prev => clampTransform({ ...prev, flipX: axis === 'x' ? !prev.flipX : prev.flipX, flipY: axis === 'y' ? !prev.flipY : prev.flipY }));
   }, [clampTransform]);
 
   const onInteractionStart = useCallback((clientX: number, clientY: number) => {
@@ -113,36 +115,37 @@ export const useImageTransform = (props: UseImageTransformProps) => {
         const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
         const newX = prev.x + rotatedDx;
         const newY = prev.y + rotatedDy;
-        return clampTransform({ ...prev, x: newX, y: newY }, prev);
+        return clampTransform({ ...prev, x: newX, y: newY });
     });
   }, [clampTransform]);
   
   const onInteractionEnd = useCallback(() => {
     isInteracting.current = false;
-    setTransform(prev => clampTransform(prev, prev));
+    setTransform(prev => clampTransform(prev));
   }, [clampTransform]);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!containerRef.current) return;
     e.preventDefault();
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const zoomFactor = 1 - e.deltaY * 0.001;
-    
     setTransform(prev => {
-        const newScale = prev.scale * zoomFactor;
-        
-        const mouseX = e.clientX - rect.left - rect.width / 2;
-        const mouseY = e.clientY - rect.top - rect.height / 2;
+      const rect = containerRef.current!.getBoundingClientRect();
+      const zoomFactor = 1 - e.deltaY * 0.001;
+      const newScale = prev.scale * zoomFactor;
+      
+      const mouseX = e.clientX - rect.left - rect.width / 2;
+      const mouseY = e.clientY - rect.top - rect.height / 2;
 
-        const angleRad = -prev.rotation * (Math.PI / 180);
-        const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
-        const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
+      const angleRad = -prev.rotation * (Math.PI / 180);
+      const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
+      const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
+      
+      interactionState.current.pivot = { x: rotatedMouseX, y: rotatedMouseY };
 
-        const newX = prev.x - (rotatedMouseX - prev.x) * (zoomFactor - 1);
-        const newY = prev.y - (rotatedMouseY - prev.y) * (zoomFactor - 1);
+      const newX = prev.x - (rotatedMouseX - prev.x) * (zoomFactor - 1);
+      const newY = prev.y - (rotatedMouseY - prev.y) * (zoomFactor - 1);
 
-        return clampTransform({ ...prev, scale: newScale, x: newX, y: newY }, prev);
+      return clampTransform({ ...prev, scale: newScale, x: newX, y: newY });
     });
   }, [clampTransform]);
 
@@ -197,6 +200,8 @@ export const useImageTransform = (props: UseImageTransformProps) => {
             const rotatedPivotX = pivotX_container * Math.cos(angleRad_prev) - pivotY_container * Math.sin(angleRad_prev);
             const rotatedPivotY = pivotX_container * Math.sin(angleRad_prev) + pivotY_container * Math.cos(angleRad_prev);
             
+            interactionState.current.pivot = { x: rotatedPivotX, y: rotatedPivotY };
+
             const zoomPanOffsetX = (prev.x - rotatedPivotX) * (scaleFactor - 1);
             const zoomPanOffsetY = (prev.y - rotatedPivotY) * (scaleFactor - 1);
 
@@ -215,7 +220,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
             interactionState.current.lastTouchAngle = newAngle;
             interactionState.current.lastPanPosition = centerPos;
         }
-        return clampTransform(newTransform, prev);
+        return clampTransform(newTransform);
     });
   }, [clampTransform]);
 

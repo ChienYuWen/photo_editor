@@ -1,6 +1,6 @@
 export interface Filter {
   name: string;
-  class: string;
+  style: string;
 }
 
 export interface Frame {

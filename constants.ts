@@ -1,14 +1,14 @@
 import type { Filter, Frame } from './types';
 
 export const FILTERS: Filter[] = [
-  { name: 'None', class: '' },
-  { name: 'Grayscale', class: 'grayscale' },
-  { name: 'Sepia', class: 'sepia' },
-  { name: 'Invert', class: 'invert' },
-  { name: 'Vintage', class: 'grayscale sepia-[.6] contrast-[1.1] brightness-[.9]' },
-  { name: 'Sunny', class: 'saturate-150 contrast-125' },
-  { name: 'Cool', class: 'hue-rotate-[-15deg] saturate-150' },
-  { name: 'Dramatic', class: 'contrast-200' },
+  { name: 'None', style: '' },
+  { name: 'Grayscale', style: 'grayscale(1)' },
+  { name: 'Sepia', style: 'sepia(1)' },
+  { name: 'Invert', style: 'invert(1)' },
+  { name: 'Vintage', style: 'grayscale(1) sepia(0.6) contrast(1.1) brightness(0.9)' },
+  { name: 'Sunny', style: 'saturate(1.5) contrast(1.25)' },
+  { name: 'Cool', style: 'hue-rotate(-15deg) saturate(1.5)' },
+  { name: 'Dramatic', style: 'contrast(2)' },
 ];
 
 export const FRAMES: Frame[] = [

@@ -1,4 +1,5 @@
 {
   "name": "AI Photo Editor",
-  "description": "An interactive photo editor that allows users to upload an image, apply various filters and frames, and transform the image with pan and zoom. Generate a final edited image for download."
+  "description": "An interactive photo editor that allows users to upload an image, apply various filters and frames, and transform the image with pan and zoom. Generate a final edited image for download.",
+  "requestFramePermissions": []
 }

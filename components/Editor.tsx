@@ -73,55 +73,87 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   }, [imageBounds, frameBounds, resetTransform]);
 
 
-  const handlePrint = useCallback(() => {
+  const handlePrint = useCallback(async () => {
     if (!imageBounds || !frameBounds) return;
     setIsProcessing(true);
+    let printContainer: HTMLDivElement | null = null;
 
-    const printContainer = document.createElement('div');
-    printContainer.style.position = 'absolute';
-    printContainer.style.left = '-9999px';
-    printContainer.style.width = `${frameBounds.width}px`;
-    printContainer.style.height = `${frameBounds.height}px`;
-    printContainer.style.overflow = 'hidden';
-    printContainer.className = activeFrame.class;
-    
-    const imageContainer = document.createElement('div');
-    imageContainer.style.width = '100%';
-    imageContainer.style.height = '100%';
-    imageContainer.style.position = 'absolute';
-    imageContainer.style.display = 'flex';
-    imageContainer.style.alignItems = 'center';
-    imageContainer.style.justifyContent = 'center';
-   
-    const scaledImage = document.createElement('img');
-    scaledImage.src = imageSrc;
-    scaledImage.className = activeFilter.class;
-    scaledImage.style.width = `${imageBounds.width}px`;
-    scaledImage.style.height = `${imageBounds.height}px`;
-    scaledImage.style.maxWidth = 'none';
-    scaledImage.style.flexShrink = '0';
-    scaledImage.style.transformOrigin = 'center center';
-    
-    const { x, y, scale, rotation, flipX, flipY } = transform;
-    scaledImage.style.transform = `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale}) scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1})`;
+    try {
+      // Step 1: Pre-render the image with the filter on a separate canvas ("baking" the filter)
+      const filteredImageSrc = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          if (!activeFilter.style) {
+            resolve(imageSrc); // No filter, use original image
+            return;
+          }
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            return reject(new Error('Could not get canvas context'));
+          }
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          ctx.filter = activeFilter.style;
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => reject(new Error('Failed to load image for canvas filter baking'));
+        img.src = imageSrc;
+      });
 
-    imageContainer.appendChild(scaledImage);
-    printContainer.appendChild(imageContainer);
-    document.body.appendChild(printContainer);
+      // Step 2: Use the pre-filtered image with html2canvas for transforms & frames
+      printContainer = document.createElement('div');
+      printContainer.style.position = 'absolute';
+      printContainer.style.left = '-9999px';
+      printContainer.style.width = `${frameBounds.width}px`;
+      printContainer.style.height = `${frameBounds.height}px`;
+      printContainer.style.overflow = 'hidden';
+      printContainer.className = activeFrame.class;
+      
+      const imageContainer = document.createElement('div');
+      imageContainer.style.width = '100%';
+      imageContainer.style.height = '100%';
+      imageContainer.style.position = 'absolute';
+      imageContainer.style.display = 'flex';
+      imageContainer.style.alignItems = 'center';
+      imageContainer.style.justifyContent = 'center';
+      
+      const imageToRender = document.createElement('div');
+      imageToRender.style.width = `${imageBounds.width}px`;
+      imageToRender.style.height = `${imageBounds.height}px`;
+      imageToRender.style.flexShrink = '0';
+      imageToRender.style.backgroundImage = `url(${filteredImageSrc})`;
+      imageToRender.style.backgroundSize = 'contain';
+      imageToRender.style.backgroundRepeat = 'no-repeat';
+      imageToRender.style.backgroundPosition = 'center';
+      imageToRender.style.transformOrigin = 'center center';
+      
+      const { x, y, scale, rotation, flipX, flipY } = transform;
+      // Add translateZ(0) to promote to a compositing layer for better transform rendering
+      imageToRender.style.transform = `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale}) scaleX(${flipX ? -1 : 1}) scaleY(${flipY ? -1 : 1}) translateZ(0px)`;
 
-    html2canvas(printContainer, {
-        useCORS: true,
-        backgroundColor: null,
-        logging: false,
-    }).then(canvas => {
-        setFinalImage(canvas.toDataURL('image/png'));
-    }).catch(err => {
+      imageContainer.appendChild(imageToRender);
+      printContainer.appendChild(imageContainer);
+      document.body.appendChild(printContainer);
+
+      const finalCanvas = await html2canvas(printContainer, {
+          useCORS: true,
+          backgroundColor: null,
+          logging: false,
+      });
+      setFinalImage(finalCanvas.toDataURL('image/png'));
+
+    } catch (err) {
         console.error("Oops, something went wrong!", err);
-    }).finally(() => {
-        document.body.removeChild(printContainer);
+    } finally {
+        if (printContainer) {
+            document.body.removeChild(printContainer);
+        }
         setIsProcessing(false);
-    });
-}, [activeFilter.class, activeFrame.class, imageSrc, transform, imageBounds, frameBounds]);
+    }
+  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, frameBounds]);
 
   const TOOLS = [
     { id: 'adjust', icon: TuneIcon, name: 'Adjust' },
@@ -176,8 +208,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                     <img
                         src={imageSrc}
                         alt="user content"
-                        className={`max-w-none select-none pointer-events-none flex-shrink-0 ${activeFilter.class}`}
-                        style={imageStyle}
+                        className={`max-w-none select-none pointer-events-none flex-shrink-0`}
+                        style={{ ...imageStyle, filter: activeFilter.style }}
                         draggable="false"
                     />
                 </div>
@@ -227,8 +259,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
               onSelect={(option) => setActiveFilter(option)}
               renderOption={(option, isSelected) => (
                 <div className="text-center">
-                  <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})` }}>
-                    <div className={`w-full h-full rounded-md ${option.class}`}></div>
+                  <div className={`w-20 h-20 rounded-lg bg-cover bg-center border-2 ${isSelected ? 'border-indigo-500' : 'border-transparent'} transition-all duration-200`} style={{ backgroundImage: `url(${imageSrc})`, filter: option.style }}>
                   </div>
                   <p className={`mt-1 text-xs ${isSelected ? 'text-indigo-400' : 'text-gray-300'}`}>{option.name}</p>
                 </div>
