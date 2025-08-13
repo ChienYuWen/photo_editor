@@ -6,7 +6,7 @@ import { useImageTransform } from '../hooks/useImageTransform';
 import SelectorPanel from './SelectorPanel';
 import FinalImageModal from './FinalImageModal';
 import { 
-  TuneIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
+  CropIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
   RotateCcwIcon, RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon
 } from './icons';
 
@@ -17,19 +17,21 @@ interface EditorProps {
   onClearImage: () => void;
 }
 
-type Tool = 'adjust' | 'finetune' | 'filter' | 'annotate' | 'sticker' | 'fill' | 'redact' | 'frame';
+type Tool = 'crop' | 'rotation' | 'finetune' | 'filter' | 'annotate' | 'sticker' | 'fill' | 'redact' | 'frame';
 
 const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
-  const [activeTool, setActiveTool] = useState<Tool>('adjust');
+  const [activeTool, setActiveTool] = useState<Tool>('crop');
   const [activeFilter, setActiveFilter] = useState<Filter>(FILTERS[0]);
   const [activeFrame, setActiveFrame] = useState<Frame>(FRAMES[0]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [finalImage, setFinalImage] = useState<string | null>(null);
+  const [cropAspectRatio, setCropAspectRatio] = useState('3/4');
 
   const [imageBounds, setImageBounds] = useState<{width: number, height: number}>();
   const [frameBounds, setFrameBounds] = useState<{width: number, height: number}>();
   
   const printFrameRef = useRef<HTMLDivElement>(null);
+  const hasBeenInitialized = useRef(false);
   
   // Sticker state
   const [stickers, setStickers] = useState<Sticker[]>([]);
@@ -60,27 +62,47 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         setImageBounds({ width: img.naturalWidth, height: img.naturalHeight });
     };
   }, [imageSrc]);
+  
+  // When the image source changes, we need to reset the initialization state
+  // so the new image can be properly fitted to the frame.
+  useLayoutEffect(() => {
+    hasBeenInitialized.current = false;
+  }, [imageSrc]);
 
   useLayoutEffect(() => {
-    if(printFrameRef.current) {
-        const rect = printFrameRef.current.getBoundingClientRect();
-        setFrameBounds({ width: rect.width, height: rect.height });
-    }
-    const observer = new ResizeObserver(() => {
-      if(printFrameRef.current) {
-        const rect = printFrameRef.current.getBoundingClientRect();
-        setFrameBounds({ width: rect.width, height: rect.height });
+    const updateBounds = () => {
+      if (printFrameRef.current) {
+        const { clientWidth, clientHeight } = printFrameRef.current;
+        if (clientWidth > 0 && clientHeight > 0) {
+          setFrameBounds({ width: clientWidth, height: clientHeight });
+        }
       }
-    });
-    if (containerRef.current) {
-        observer.observe(containerRef.current);
-    }
-    return () => observer.disconnect();
-  }, [containerRef]);
+    };
 
+    updateBounds();
+
+    const observer = new ResizeObserver(updateBounds);
+    const mainEl = containerRef.current;
+    if (mainEl) {
+      observer.observe(mainEl);
+    }
+
+    return () => {
+      if (mainEl) {
+        observer.unobserve(mainEl);
+      }
+    };
+  }, [cropAspectRatio, activeFrame.class, containerRef]);
+
+
+  // This effect should only run once when the editor is initialized with an image.
+  // It waits for both the image's dimensions and the container's dimensions to be known.
+  // The `hasBeenInitialized` ref prevents it from re-running on resizes, which would
+  // incorrectly reset the user's pan/zoom adjustments.
   useLayoutEffect(() => {
-    if(imageBounds && frameBounds) {
+    if (imageBounds && frameBounds && !hasBeenInitialized.current) {
         resetTransform();
+        hasBeenInitialized.current = true;
     }
   }, [imageBounds, frameBounds, resetTransform]);
   
@@ -207,10 +229,12 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     if (!imageBounds || !printFrame) return;
     setIsProcessing(true);
 
-    const currentFrameBounds = printFrame.getBoundingClientRect();
     const outputResolutionMultiplier = 2;
-    const outputWidth = currentFrameBounds.width * outputResolutionMultiplier;
-    const outputHeight = currentFrameBounds.height * outputResolutionMultiplier;
+
+    const contentWidth = printFrame.clientWidth;
+    const contentHeight = printFrame.clientHeight;
+    const outputContentWidth = contentWidth * outputResolutionMultiplier;
+    const outputContentHeight = contentHeight * outputResolutionMultiplier;
 
     let finalImageContainer: HTMLDivElement | null = null;
 
@@ -223,10 +247,11 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
             image.src = imageSrc;
         });
 
-        const canvas = document.createElement('canvas');
-        canvas.width = outputWidth;
-        canvas.height = outputHeight;
-        const ctx = canvas.getContext('2d');
+        // Step 1: Create a canvas with the transformed image content (the cropped view)
+        const contentCanvas = document.createElement('canvas');
+        contentCanvas.width = outputContentWidth;
+        contentCanvas.height = outputContentHeight;
+        const ctx = contentCanvas.getContext('2d');
         if (!ctx) throw new Error('Could not get canvas context');
         
         ctx.imageSmoothingQuality = 'high';
@@ -234,16 +259,20 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         // Draw main image with filter
         ctx.save();
         if (activeFilter.style) ctx.filter = activeFilter.style;
-        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.translate(contentCanvas.width / 2, contentCanvas.height / 2);
+        
         const { x, y, scale, rotation, flipX, flipY } = transform;
+        const effectiveScale = scale * outputResolutionMultiplier;
+
         ctx.translate(x * outputResolutionMultiplier, y * outputResolutionMultiplier);
         ctx.rotate(rotation * (Math.PI / 180));
-        ctx.scale(scale, scale);
-        ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+        ctx.scale(effectiveScale * (flipX ? -1 : 1), effectiveScale * (flipY ? -1 : 1));
+        
         ctx.drawImage(img, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
         ctx.restore();
 
-        // Reset filter and draw stickers
+
+        // Draw stickers onto the content canvas
         ctx.filter = 'none';
         const stickerImages = await Promise.all(stickers.map(s => new Promise<HTMLImageElement>((resolve, reject) => {
             const stickerImg = new Image();
@@ -256,8 +285,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         stickers.forEach((sticker, index) => {
             const stickerImg = stickerImages[index];
             const { x, y, width, height, scale, rotation } = sticker;
-            const canvasCenterX = canvas.width / 2;
-            const canvasCenterY = canvas.height / 2;
+            const canvasCenterX = contentCanvas.width / 2;
+            const canvasCenterY = contentCanvas.height / 2;
             const drawX = canvasCenterX + x * outputResolutionMultiplier;
             const drawY = canvasCenterY + y * outputResolutionMultiplier;
             const drawWidth = width * scale * outputResolutionMultiplier;
@@ -269,17 +298,21 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
             ctx.restore();
         });
 
-        const transformedImageSrc = canvas.toDataURL('image/png');
+        const transformedImageSrc = contentCanvas.toDataURL('image/png');
 
+        // Step 2: If there's a frame, create a new container and use html2canvas to add it
         if (activeFrame.class && activeFrame.name !== 'None') {
             finalImageContainer = document.createElement('div');
             finalImageContainer.style.position = 'absolute';
             finalImageContainer.style.left = '-9999px';
-            finalImageContainer.style.width = `${outputWidth}px`;
-            finalImageContainer.style.height = `${outputHeight}px`;
-            finalImageContainer.style.boxSizing = 'border-box';
-            finalImageContainer.className = activeFrame.class;
             
+            // Apply the frame's class and set box-sizing to content-box.
+            // This ensures width/height apply to the content area, and the border is drawn outside.
+            finalImageContainer.className = activeFrame.class;
+            finalImageContainer.style.boxSizing = 'content-box';
+            finalImageContainer.style.width = `${outputContentWidth}px`;
+            finalImageContainer.style.height = `${outputContentHeight}px`;
+
             const imageToRender = document.createElement('img');
             imageToRender.style.width = '100%';
             imageToRender.style.height = '100%';
@@ -290,10 +323,14 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
             document.body.appendChild(finalImageContainer);
 
             const finalCanvas = await html2canvas(finalImageContainer, {
-                useCORS: true, backgroundColor: null, logging: false, scale: 1,
+                useCORS: true,
+                backgroundColor: null,
+                logging: false,
+                scale: 1, // Already scaled up
             });
             setFinalImage(finalCanvas.toDataURL('image/png'));
         } else {
+            // If no frame, the content canvas is the final image.
             setFinalImage(transformedImageSrc);
         }
 
@@ -308,7 +345,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
 
 
   const TOOLS = [
-    { id: 'adjust', icon: TuneIcon, name: 'Adjust' },
+    { id: 'crop', icon: CropIcon, name: 'Crop' },
+    { id: 'rotation', icon: RotateCwIcon, name: 'Rotation' },
     { id: 'filter', icon: FilterIcon, name: 'Filter' },
     { id: 'frame', icon: FrameIcon, name: 'Frame' },
     { id: 'sticker', icon: StickerIcon, name: 'Sticker' },
@@ -316,13 +354,13 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     { id: 'fill', icon: FillIcon, name: 'Fill' },
     { id: 'redact', icon: RedactIcon, name: 'Redact' },
   ] as const;
-  
+
   const handleRotationSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setRotation(parseFloat(e.target.value));
   };
   
-  const enabledTools = ['adjust', 'filter', 'frame', 'sticker'];
-  const showOptionsPanel = enabledTools.includes(activeTool) && activeTool !== 'adjust';
+  const enabledTools = ['crop', 'rotation', 'filter', 'frame', 'sticker'];
+  const showOptionsPanel = ['filter', 'frame', 'sticker'].includes(activeTool);
 
   return (
     <div className="w-full h-screen bg-gray-900 text-white flex flex-col">
@@ -341,10 +379,10 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         </button>
       </header>
       
-      <div className="flex-1 grid grid-rows-1 grid-cols-1 overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden">
         <main 
             ref={containerRef} 
-            className="row-start-1 col-start-1 flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
+            className="flex-1 relative flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
             {...imageTransformHandlers} 
             onMouseDown={handleMouseDown} 
             onMouseMove={handleMouseMove} 
@@ -363,8 +401,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
 
             <div
                 ref={printFrameRef}
-                className={`absolute w-4/5 aspect-[4/3] max-w-full max-h-full pointer-events-none box-content ${activeFrame.class}`}
-                style={{ boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)' }}
+                className={`absolute w-4/5 max-w-full max-h-full pointer-events-none box-content transition-all duration-300 ${activeFrame.class}`}
+                style={{ aspectRatio: cropAspectRatio, boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)' }}
             >
                 <div className="absolute inset-0 w-full h-full pointer-events-none border border-white/50" />
                 <div className="absolute top-0 bottom-0 left-1/3 -translate-x-1/2 w-px bg-black/50 ring-1 ring-white/20" />
@@ -407,7 +445,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
             </div>
         </main>
         
-        <footer className="row-start-1 col-start-1 self-end w-full bg-gray-800 shadow-inner z-10 border-t border-gray-700">
+        <footer className="flex-shrink-0 bg-gray-800 shadow-inner z-10 border-t border-gray-700">
           <div className={`transition-[max-height] duration-300 ease-in-out overflow-hidden ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
             <div className="w-full border-b border-gray-700/80">
               {activeTool === 'filter' && (
@@ -492,10 +530,11 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
               <button
                 key={tool.id}
                 onClick={() => {
-                  if(activeTool === tool.id) {
-                      setActiveTool(enabledTools.includes(tool.id) && tool.id !== 'adjust' ? 'adjust' : tool.id);
+                  const panelTools = ['filter', 'frame', 'sticker'];
+                  if (activeTool === tool.id && panelTools.includes(tool.id)) {
+                    setActiveTool('crop');
                   } else {
-                      setActiveTool(tool.id)
+                    setActiveTool(tool.id);
                   }
                 }}
                 className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
@@ -507,7 +546,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
               </button>
             ))}
           </div>
-           {activeTool === 'adjust' && (
+           {activeTool === 'rotation' && (
               <div className="p-4 flex justify-center items-center gap-4 border-t border-gray-700/80">
                 <button onClick={() => rotateBy(-90)} title="Rotate Left" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCcwIcon className="w-6 h-6" /></button>
                 <button onClick={() => rotateBy(90)} title="Rotate Right" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCwIcon className="w-6 h-6" /></button>
