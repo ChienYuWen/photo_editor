@@ -53,7 +53,11 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     rotateBy, 
     setRotation, 
     flip 
-  } = useImageTransform({imageBounds, frameBounds});
+  } = useImageTransform({
+    imageBounds, 
+    frameBounds,
+    rotationGestureEnabled: activeTool !== 'crop',
+  });
 
   useLayoutEffect(() => {
     const img = new Image();

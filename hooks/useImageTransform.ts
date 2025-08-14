@@ -9,6 +9,7 @@ interface Bounds {
 interface UseImageTransformProps {
   imageBounds?: Bounds;
   frameBounds?: Bounds;
+  rotationGestureEnabled?: boolean;
 }
 
 const MAX_ZOOM = 5;
@@ -21,7 +22,7 @@ const normalizeAngle = (angle: number): number => {
 };
 
 export const useImageTransform = (props: UseImageTransformProps) => {
-  const { imageBounds, frameBounds } = props;
+  const { imageBounds, frameBounds, rotationGestureEnabled = true } = props;
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, scale: 1, rotation: 0, flipX: false, flipY: false });
   
   const isInteracting = useRef(false);
@@ -29,7 +30,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     lastPanPosition: { x: 0, y: 0 },
     lastTouchDist: 0,
     lastTouchAngle: 0,
-    pivot: { x: 0, y: 0 }, // Pivot in image's coordinate system
+    pivot: { x: 0, y: 0 }, // Pivot in container's coordinate system
   });
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -48,7 +49,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     const minScale = Math.max(minScaleToCoverX, minScaleToCoverY);
     
     const uncappedScale = t.scale;
-    const clampedScale = Math.max(minScale, Math.min(uncappedScale, MAX_ZOOM));
+    let clampedScale = Math.max(minScale, Math.min(uncappedScale, MAX_ZOOM));
 
     let { x, y } = t;
 
@@ -111,11 +112,8 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     interactionState.current.lastPanPosition = { x: clientX, y: clientY };
 
     setTransform(prev => {
-        const angleRad = -prev.rotation * (Math.PI / 180);
-        const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
-        const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
-        const newX = prev.x + rotatedDx;
-        const newY = prev.y + rotatedDy;
+        const newX = prev.x + dx;
+        const newY = prev.y + dy;
         return clampTransform({ ...prev, x: newX, y: newY });
     });
   }, [clampTransform]);
@@ -137,14 +135,11 @@ export const useImageTransform = (props: UseImageTransformProps) => {
       const mouseX = e.clientX - rect.left - rect.width / 2;
       const mouseY = e.clientY - rect.top - rect.height / 2;
 
-      const angleRad = -prev.rotation * (Math.PI / 180);
-      const rotatedMouseX = mouseX * Math.cos(angleRad) - mouseY * Math.sin(angleRad);
-      const rotatedMouseY = mouseX * Math.sin(angleRad) + mouseY * Math.cos(angleRad);
-      
-      interactionState.current.pivot = { x: rotatedMouseX, y: rotatedMouseY };
+      interactionState.current.pivot = { x: mouseX, y: mouseY };
 
-      const newX = prev.x - (rotatedMouseX - prev.x) * (zoomFactor - 1);
-      const newY = prev.y - (rotatedMouseY - prev.y) * (zoomFactor - 1);
+      // Zoom towards mouse position
+      const newX = mouseX + (prev.x - mouseX) * zoomFactor;
+      const newY = mouseY + (prev.y - mouseY) * zoomFactor;
 
       return clampTransform({ ...prev, scale: newScale, x: newX, y: newY });
     });
@@ -158,10 +153,12 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     } else if (e.touches.length === 2) {
         const [t1, t2] = [e.touches[0], e.touches[1]];
         interactionState.current.lastTouchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-        interactionState.current.lastTouchAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
+        if (rotationGestureEnabled) {
+          interactionState.current.lastTouchAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
+        }
         interactionState.current.lastPanPosition = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
     }
-  }, []);
+  }, [rotationGestureEnabled]);
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
@@ -176,54 +173,53 @@ export const useImageTransform = (props: UseImageTransformProps) => {
             const dy = t.clientY - interactionState.current.lastPanPosition.y;
             interactionState.current.lastPanPosition = { x: t.clientX, y: t.clientY };
             
-            const angleRad = -prev.rotation * (Math.PI / 180);
-            const rotatedDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
-            const rotatedDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
-            newTransform.x += rotatedDx;
-            newTransform.y += rotatedDy;
+            newTransform.x += dx;
+            newTransform.y += dy;
 
         } else if (e.touches.length === 2) {
             const [t1, t2] = [e.touches[0], e.touches[1]];
             const newDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-            const newAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
             const centerPos = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
             
             const scaleFactor = newDist / interactionState.current.lastTouchDist;
-            const angleDelta = newAngle - interactionState.current.lastTouchAngle;
+            
+            let angleDelta = 0;
+            if (rotationGestureEnabled) {
+                const newAngle = Math.atan2(t1.clientY - t2.clientY, t1.clientX - t2.clientX) * (180 / Math.PI);
+                angleDelta = newAngle - interactionState.current.lastTouchAngle;
+                interactionState.current.lastTouchAngle = newAngle;
+            }
+
             const panDx = centerPos.x - interactionState.current.lastPanPosition.x;
             const panDy = centerPos.y - interactionState.current.lastPanPosition.y;
 
             const rect = containerRef.current!.getBoundingClientRect();
-            const pivotX_container = centerPos.x - rect.left - rect.width / 2;
-            const pivotY_container = centerPos.y - rect.top - rect.height / 2;
+            const pivotX = centerPos.x - rect.left - rect.width / 2;
+            const pivotY = centerPos.y - rect.top - rect.height / 2;
             
-            const angleRad_prev = -prev.rotation * (Math.PI / 180);
-            const rotatedPivotX = pivotX_container * Math.cos(angleRad_prev) - pivotY_container * Math.sin(angleRad_prev);
-            const rotatedPivotY = pivotX_container * Math.sin(angleRad_prev) + pivotY_container * Math.cos(angleRad_prev);
+            interactionState.current.pivot = { x: pivotX, y: pivotY };
+
+            // Apply transformations:
+            // 1. Scale relative to the touch center
+            // 2. Pan
+            // 3. Rotate
+            const x_after_zoom = pivotX + (prev.x - pivotX) * scaleFactor;
+            const y_after_zoom = pivotY + (prev.y - pivotY) * scaleFactor;
             
-            interactionState.current.pivot = { x: rotatedPivotX, y: rotatedPivotY };
-
-            const zoomPanOffsetX = (prev.x - rotatedPivotX) * (scaleFactor - 1);
-            const zoomPanOffsetY = (prev.y - rotatedPivotY) * (scaleFactor - 1);
-
-            const rotatedPanDx = panDx * Math.cos(angleRad_prev) - panDy * Math.sin(angleRad_prev);
-            const rotatedPanDy = panDx * Math.sin(angleRad_prev) + panDy * Math.cos(angleRad_prev);
-
             newTransform = {
                 ...prev,
                 scale: prev.scale * scaleFactor,
                 rotation: prev.rotation + angleDelta,
-                x: prev.x + rotatedPanDx + zoomPanOffsetX,
-                y: prev.y + rotatedPanDy + zoomPanOffsetY,
+                x: x_after_zoom + panDx,
+                y: y_after_zoom + panDy,
             };
 
             interactionState.current.lastTouchDist = newDist;
-            interactionState.current.lastTouchAngle = newAngle;
             interactionState.current.lastPanPosition = centerPos;
         }
         return clampTransform(newTransform);
     });
-  }, [clampTransform]);
+  }, [clampTransform, rotationGestureEnabled]);
 
   const imageStyle: React.CSSProperties = useMemo(() => ({
     transform: `translate(${transform.x}px, ${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale}) scaleX(${transform.flipX ? -1 : 1}) scaleY(${transform.flipY ? -1 : 1})`,
