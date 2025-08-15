@@ -64,7 +64,7 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <main className="w-full min-h-screen bg-gray-900">
+    <main className="w-full min-h-dvh bg-gray-900">
       {imageSrc ? (
         <Editor imageSrc={imageSrc} onClearImage={handleClearImage} />
       ) : (

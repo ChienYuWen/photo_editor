@@ -45,7 +45,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload, isLoading 
 
 
   return (
-    <div className="w-full h-screen flex flex-col justify-center items-center p-4 bg-gray-900 text-gray-400">
+    <div className="w-full h-dvh flex flex-col justify-center items-center p-4 bg-gray-900 text-gray-400">
       <div
         className={`w-full max-w-lg h-80 border-2 border-dashed rounded-xl flex flex-col justify-center items-center text-center p-8 transition-all duration-300 ${isDragging ? 'border-indigo-500 bg-gray-800' : 'border-gray-600'} ${isLoading ? 'cursor-wait' : 'hover:border-gray-500 hover:bg-gray-800/50 cursor-pointer'}`}
         onClick={() => !isLoading && fileInputRef.current?.click()}

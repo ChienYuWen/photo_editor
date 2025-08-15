@@ -428,7 +428,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const showOptionsPanel = ['filter', 'frame', 'sticker'].includes(activeTool);
 
   return (
-    <div className="w-full h-screen bg-gray-900 text-white flex flex-col">
+    <div className="w-full h-dvh bg-gray-900 text-white flex flex-col">
       <FinalImageModal imageDataUrl={finalImage} onClose={() => setFinalImage(null)} />
       
       <header className="w-full bg-gray-800 flex justify-between items-center p-3 shadow-md z-20">
