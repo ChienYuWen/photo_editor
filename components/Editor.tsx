@@ -7,7 +7,8 @@ import SelectorPanel from './SelectorPanel';
 import FinalImageModal from './FinalImageModal';
 import { 
   CropIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
-  RotateCcwIcon, RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon
+  RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon, EyeIcon,
+  FlipVerticalIcon
 } from './icons';
 
 declare const html2canvas: any;
@@ -24,6 +25,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [activeFilter, setActiveFilter] = useState<Filter>(FILTERS[0]);
   const [activeFrame, setActiveFrame] = useState<Frame>(FRAMES[0]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
+  const [isComparing, setIsComparing] = useState(false);
   const [finalImage, setFinalImage] = useState<string | null>(null);
   const [cropAspectRatio, setCropAspectRatio] = useState('3/4');
 
@@ -226,6 +229,61 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     setDraggingSticker(null);
     imageTransformHandlers.onMouseUp();
   }, [imageTransformHandlers]);
+  
+  const handleSmartEnhance = useCallback(async () => {
+    if (!imageSrc || !process.env.API_KEY) {
+      alert("Cannot enhance image. Image source or API key is missing.");
+      return;
+    }
+
+    setIsEnhancing(true);
+
+    try {
+      const parts = imageSrc.split(',');
+      if (parts.length < 2) throw new Error("Invalid image data URL");
+      
+      const mimeTypeMatch = parts[0].match(/:(.*?);/);
+      if (!mimeTypeMatch) throw new Error("Could not determine mime type from data URL");
+
+      const mimeType = mimeTypeMatch[1];
+      const base64Data = parts[1];
+      
+      const imagePart = {
+        inlineData: {
+          data: base64Data,
+          mimeType: mimeType,
+        },
+      };
+
+      const filterList = FILTERS.map(f => f.name).join(', ');
+      const textPart = {
+        text: `Analyze this photo. Which of these filters would enhance it the most? Your response must be only one of the following words from this list: ${filterList}`,
+      };
+
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: [imagePart, textPart] },
+      });
+      
+      const suggestedFilterName = response.text.trim();
+      const suggestedFilter = FILTERS.find(f => f.name.toLowerCase() === suggestedFilterName.toLowerCase());
+
+      if (suggestedFilter) {
+        setActiveFilter(suggestedFilter);
+        setActiveTool('filter'); 
+      } else {
+        console.warn(`AI suggested an unknown filter: "${suggestedFilterName}"`);
+        alert(`AI could not find a suitable filter. No changes applied.`);
+      }
+
+    } catch (error) {
+      console.error("Smart Enhance failed:", error);
+      alert("Sorry, the Smart Enhance feature encountered an error. Please try again.");
+    } finally {
+      setIsEnhancing(false);
+    }
+  }, [imageSrc, setActiveFilter, setActiveTool]);
 
 
   const handlePrint = useCallback(async () => {
@@ -269,8 +327,11 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         const effectiveScale = scale * outputResolutionMultiplier;
 
         ctx.translate(x * outputResolutionMultiplier, y * outputResolutionMultiplier);
+        
+        // Apply flip before rotation for intuitive behavior
+        ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
         ctx.rotate(rotation * (Math.PI / 180));
-        ctx.scale(effectiveScale * (flipX ? -1 : 1), effectiveScale * (flipY ? -1 : 1));
+        ctx.scale(effectiveScale, effectiveScale);
         
         ctx.drawImage(img, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
         ctx.restore();
@@ -371,22 +432,46 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
       <FinalImageModal imageDataUrl={finalImage} onClose={() => setFinalImage(null)} />
       
       <header className="w-full bg-gray-800 flex justify-between items-center p-3 shadow-md z-20">
-        <button onClick={onClearImage} className="flex items-center gap-2 text-sm text-gray-300 hover:text-white transition-colors">
-          <ImagePlusIcon className="w-5 h-5" /> Change Photo
-        </button>
+        <div className="flex items-center gap-4">
+            <button onClick={onClearImage} className="flex items-center gap-2 text-sm text-gray-300 hover:text-white transition-colors">
+              <ImagePlusIcon className="w-5 h-5" /> Change Photo
+            </button>
+            <button
+              onClick={handleSmartEnhance}
+              disabled={isProcessing || isEnhancing || !imageBounds}
+              className="flex items-center gap-2 text-sm font-semibold text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Use AI to suggest the best filter for your photo"
+            >
+              {isEnhancing ? <SpinnerIcon className="w-5 h-5 animate-spin" /> : <SparklesIcon className="w-5 h-5" />}
+              {isEnhancing ? 'Analyzing...' : 'Smart Enhance'}
+            </button>
+            <button
+              onMouseDown={() => setIsComparing(true)}
+              onMouseUp={() => setIsComparing(false)}
+              onMouseLeave={() => setIsComparing(false)}
+              onTouchStart={() => setIsComparing(true)}
+              onTouchEnd={() => setIsComparing(false)}
+              disabled={activeFilter.name === 'None' || isProcessing || isEnhancing}
+              className="flex items-center gap-2 text-sm text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-md px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Press and hold to see the original photo"
+            >
+              <EyeIcon className="w-5 h-5" />
+              Compare
+            </button>
+        </div>
         <button
           onClick={handlePrint}
-          disabled={isProcessing || !imageBounds}
+          disabled={isProcessing || isEnhancing || !imageBounds}
           className="bg-yellow-400 hover:bg-yellow-500 disabled:bg-yellow-300 disabled:cursor-not-allowed text-black font-bold py-2 px-6 rounded-lg transition-colors duration-300"
         >
           {isProcessing ? 'Processing...' : 'Done'}
         </button>
       </header>
       
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 relative overflow-hidden">
         <main 
             ref={containerRef} 
-            className="flex-1 relative flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
+            className="w-full h-full relative flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
             {...imageTransformHandlers} 
             onMouseDown={handleMouseDown} 
             onMouseMove={handleMouseMove} 
@@ -397,8 +482,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                 <img
                     src={imageSrc}
                     alt="user content"
-                    className={`max-w-none select-none flex-shrink-0`}
-                    style={{ ...imageStyle, filter: activeFilter.style }}
+                    className={`max-w-none select-none flex-shrink-0 transition-all duration-200`}
+                    style={{ ...imageStyle, filter: isComparing ? 'none' : activeFilter.style }}
                     draggable="false"
                 />
             </div>
@@ -449,7 +534,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
             </div>
         </main>
         
-        <footer className="flex-shrink-0 bg-gray-800 shadow-inner z-10 border-t border-gray-700">
+        <footer className="absolute bottom-0 left-0 right-0 bg-gray-800/70 backdrop-blur-md shadow-inner z-10 border-t border-gray-700/50">
           <div className={`transition-[max-height] duration-300 ease-in-out overflow-hidden ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
             <div className="w-full border-b border-gray-700/80">
               {activeTool === 'filter' && (
@@ -552,9 +637,8 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
           </div>
            {activeTool === 'rotation' && (
               <div className="p-4 flex justify-center items-center gap-4 border-t border-gray-700/80">
-                <button onClick={() => rotateBy(-90)} title="Rotate Left" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCcwIcon className="w-6 h-6" /></button>
-                <button onClick={() => rotateBy(90)} title="Rotate Right" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><RotateCwIcon className="w-6 h-6" /></button>
                 <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
+                <button onClick={() => flip('y')} title="Flip Vertical" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipVerticalIcon className="w-6 h-6" /></button>
                 <div className="flex items-center gap-2 w-48">
                     <span className="text-sm w-12 text-center">{Math.round(transform.rotation)}°</span>
                     <input 

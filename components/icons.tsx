@@ -280,6 +280,24 @@ export const FlipHorizontalIcon: React.FC<IconProps> = ({ className }) => (
     </svg>
 );
 
+export const FlipVerticalIcon: React.FC<IconProps> = ({ className }) => (
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={className}>
+        <path d="M2 12h20" />
+        <path d="m16 4-4 4-4-4" />
+        <path d="m16 20-4-4-4 4" />
+    </svg>
+);
+
 export const SpinnerIcon: React.FC<IconProps> = ({ className }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -312,6 +330,23 @@ export const SparklesIcon: React.FC<IconProps> = ({ className }) => (
         <path d="m12 3-1.9 3.8-3.8 1.9 3.8 1.9 1.9 3.8 1.9-3.8 3.8-1.9-3.8-1.9z" />
         <path d="M5 11.5 6.5 8l-1.5-3.5L3 6l2 5.5z" />
         <path d="m19 12.5 1.5 3.5-1.5 3.5-2-1.5-1.5-4.5z" />
+    </svg>
+);
+
+export const EyeIcon: React.FC<IconProps> = ({ className }) => (
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={className}>
+        <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+        <circle cx="12" cy="12" r="3" />
     </svg>
 );
 

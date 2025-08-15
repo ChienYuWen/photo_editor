@@ -222,7 +222,7 @@ export const useImageTransform = (props: UseImageTransformProps) => {
   }, [clampTransform, rotationGestureEnabled]);
 
   const imageStyle: React.CSSProperties = useMemo(() => ({
-    transform: `translate(${transform.x}px, ${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale}) scaleX(${transform.flipX ? -1 : 1}) scaleY(${transform.flipY ? -1 : 1})`,
+    transform: `translate(${transform.x}px, ${transform.y}px) scaleX(${transform.flipX ? -1 : 1}) scaleY(${transform.flipY ? -1 : 1}) rotate(${transform.rotation}deg) scale(${transform.scale})`,
     transformOrigin: 'center center',
     transition: isInteracting.current ? 'none' : 'transform 0.1s ease-out',
   }), [transform, isInteracting.current]);
