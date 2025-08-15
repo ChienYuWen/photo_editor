@@ -8,7 +8,7 @@ import FinalImageModal from './FinalImageModal';
 import { 
   CropIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
   RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon, EyeIcon, TuneIcon,
-  FlipVerticalIcon, UndoIcon, EraserIcon
+  FlipVerticalIcon, UndoIcon, EraserIcon, CheckIcon, ArrowLeftIcon
 } from './icons';
 
 declare const html2canvas: any;
@@ -19,6 +19,7 @@ interface EditorProps {
 }
 
 type Tool = 'crop' | 'rotation' | 'finetune' | 'filter' | 'annotate' | 'sticker' | 'fill' | 'redact' | 'frame';
+type FinetuneSubTool = keyof FinetuneSettings;
 
 const DEFAULT_FINETUNE_SETTINGS: FinetuneSettings = {
   brightness: 100,
@@ -28,8 +29,17 @@ const DEFAULT_FINETUNE_SETTINGS: FinetuneSettings = {
   vignette: 0,
 };
 
+const FINETUNE_TOOLS: { id: FinetuneSubTool; name: string; min: number; max: number }[] = [
+    { id: 'brightness', name: '亮度', min: 50, max: 150 },
+    { id: 'contrast', name: '對比', min: 50, max: 150 },
+    { id: 'saturation', name: '飽和度', min: 0, max: 200 },
+    { id: 'sepia', name: '色溫', min: 0, max: 100 },
+    { id: 'vignette', name: '暈映', min: 0, max: 100 },
+];
+
 const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [activeTool, setActiveTool] = useState<Tool>('crop');
+  const [activeFinetuneTool, setActiveFinetuneTool] = useState<FinetuneSubTool | null>(null);
   const [activeFilter, setActiveFilter] = useState<Filter>(FILTERS[0]);
   const [activeFrame, setActiveFrame] = useState<Frame>(FRAMES[0]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -641,21 +651,132 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   };
   
   const enabledTools = ['crop', 'rotation', 'finetune', 'filter', 'frame', 'sticker', 'annotate'];
-  const showOptionsPanel = ['filter', 'frame', 'sticker', 'finetune'].includes(activeTool);
+  const showOptionsPanel = ['filter', 'frame', 'sticker'].includes(activeTool);
   const DRAW_COLORS = ['#ffffff', '#000000', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6'];
 
-  const FinetuneSlider = ({ label, value, min, max, step = 1, onChange, onReset }) => (
-    <div className="flex items-center gap-2 text-sm">
-        <label className="w-20 text-gray-300 capitalize">{label}</label>
-        <input 
-            type="range" min={min} max={max} step={step} value={value}
-            onChange={onChange}
-            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
-        />
-        <span className="text-xs w-8 text-right">{value}</span>
-        <button onClick={onReset} title={`Reset ${label}`} className="p-1 rounded-full hover:bg-gray-700 transition-colors"><UndoIcon className="w-4 h-4" /></button>
-    </div>
-  );
+  const renderFooter = () => {
+    if (activeTool === 'finetune') {
+      if (activeFinetuneTool) {
+        // Tertiary Menu: Individual Slider
+        const currentTool = FINETUNE_TOOLS.find(t => t.id === activeFinetuneTool)!;
+        return (
+          <div className="p-4 flex justify-center items-center gap-2 border-t border-gray-700/80 h-[88px] animate-fade-in-up">
+              <button onClick={() => setActiveFinetuneTool(null)} className="p-2 rounded-full hover:bg-gray-700 transition-colors" title="Back">
+                <ArrowLeftIcon className="w-6 h-6" />
+              </button>
+              <div className="flex-1 flex items-center gap-2 text-sm">
+                  <label className="w-16 text-gray-300 capitalize">{currentTool.name}</label>
+                  <input 
+                      type="range"
+                      min={currentTool.min}
+                      max={currentTool.max}
+                      value={finetuneSettings[currentTool.id]}
+                      onChange={e => setFinetuneSettings(s => ({...s, [currentTool.id]: +e.target.value}))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
+                  />
+                  <span className="text-xs w-8 text-right">{finetuneSettings[currentTool.id]}</span>
+                  <button 
+                    onClick={() => setFinetuneSettings(s => ({...s, [currentTool.id]: DEFAULT_FINETUNE_SETTINGS[currentTool.id]}))}
+                    title={`Reset ${currentTool.name}`} className="p-1 rounded-full hover:bg-gray-700 transition-colors">
+                      <UndoIcon className="w-4 h-4" />
+                  </button>
+              </div>
+              <button onClick={() => setActiveFinetuneTool(null)} className="p-2 rounded-full hover:bg-gray-700 transition-colors" title="Done">
+                <CheckIcon className="w-6 h-6" />
+              </button>
+          </div>
+        );
+      } else {
+        // Secondary Menu: Finetune Options
+        return (
+          <div className="p-2 flex justify-around items-center gap-4 border-t border-gray-700/80 h-[88px] animate-fade-in-up">
+            <button onClick={() => setActiveTool('crop')} className="text-sm font-semibold text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg transition-colors">Done</button>
+            <div className="flex-1 flex justify-center items-center gap-4">
+              {FINETUNE_TOOLS.map(tool => (
+                <button key={tool.id} onClick={() => setActiveFinetuneTool(tool.id)} className="text-sm font-semibold text-gray-300 hover:text-indigo-400 p-2 rounded-lg transition-colors">
+                  {tool.name}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setFinetuneSettings(DEFAULT_FINETUNE_SETTINGS)} className="text-sm font-semibold text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg transition-colors">Reset</button>
+          </div>
+        );
+      }
+    }
+
+    // Default: Main Toolbar
+    const mainToolbar = (
+      <div className="flex items-center justify-center p-2 space-x-1">
+        {TOOLS.map(tool => (
+          <button
+            key={tool.id}
+            onClick={() => {
+              setActiveFinetuneTool(null);
+              const panelTools = ['filter', 'frame', 'sticker'];
+              if (activeTool === tool.id && panelTools.includes(tool.id)) {
+                setActiveTool('crop');
+              } else {
+                setActiveTool(tool.id);
+              }
+            }}
+            className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+            title={tool.name}
+            disabled={!enabledTools.includes(tool.id)}
+          >
+            <tool.icon className={`w-5 h-5 mb-1 ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`} />
+            <span className={`text-[11px] font-medium ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
+          </button>
+        ))}
+      </div>
+    );
+
+    switch (activeTool) {
+      case 'rotation':
+        return (
+          <div className="animate-fade-in-up">
+            <div className="p-4 flex justify-center items-center gap-4 border-t border-gray-700/80">
+              <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
+              <button onClick={() => flip('y')} title="Flip Vertical" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipVerticalIcon className="w-6 h-6" /></button>
+              <div className="flex items-center gap-2 w-48">
+                  <span className="text-sm w-12 text-center">{Math.round(transform.rotation)}°</span>
+                  <input 
+                    type="range" min="-180" max="180" step="0.5" value={transform.rotation}
+                    onChange={handleRotationSliderChange}
+                    className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
+                  />
+              </div>
+            </div>
+            {mainToolbar}
+          </div>
+        );
+      case 'annotate':
+         return (
+          <div className="animate-fade-in-up">
+            <div className="p-4 flex flex-wrap justify-center items-center gap-4 border-t border-gray-700/80">
+              <button onClick={() => setDrawingPaths(paths => paths.slice(0, -1))} title="Undo" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><UndoIcon className="w-6 h-6" /></button>
+              <button onClick={() => setDrawingPaths([])} title="Clear All" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><Trash2Icon className="w-6 h-6" /></button>
+              <div className="flex items-center gap-2">
+                {DRAW_COLORS.map(color => (
+                  <button key={color} onClick={() => { setBrushColor(color); setIsErasing(false); }} className={`w-7 h-7 rounded-full border-2 transition-all ${brushColor === color && !isErasing ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: color }} />
+                ))}
+              </div>
+               <button onClick={() => setIsErasing(!isErasing)} title="Eraser" className={`p-2 rounded-full transition-colors ${isErasing ? 'bg-indigo-500' : 'hover:bg-gray-700'}`}><EraserIcon className="w-6 h-6" /></button>
+              <div className="flex items-center gap-2 w-48">
+                  <span className="text-sm w-10 text-center">{brushSize}px</span>
+                  <input 
+                    type="range" min="1" max="50" step="1" value={brushSize}
+                    onChange={(e) => setBrushSize(parseInt(e.target.value, 10))}
+                    className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
+                  />
+              </div>
+            </div>
+             {mainToolbar}
+          </div>
+        );
+      default:
+        return mainToolbar;
+    }
+  };
 
   return (
     <div className="w-full h-dvh bg-gray-900 text-white flex flex-col">
@@ -884,108 +1005,12 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                   </div>
                 </div>
               )}
-               {activeTool === 'finetune' && (
-                <div className="p-4 border-t border-gray-700/80">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
-                        <FinetuneSlider 
-                            label="亮度" value={finetuneSettings.brightness}
-                            min={50} max={150}
-                            onChange={e => setFinetuneSettings(s => ({...s, brightness: +e.target.value}))}
-                            onReset={() => setFinetuneSettings(s => ({...s, brightness: DEFAULT_FINETUNE_SETTINGS.brightness}))}
-                        />
-                        <FinetuneSlider 
-                            label="對比" value={finetuneSettings.contrast}
-                            min={50} max={150}
-                            onChange={e => setFinetuneSettings(s => ({...s, contrast: +e.target.value}))}
-                            onReset={() => setFinetuneSettings(s => ({...s, contrast: DEFAULT_FINETUNE_SETTINGS.contrast}))}
-                        />
-                        <FinetuneSlider 
-                            label="飽和度" value={finetuneSettings.saturation}
-                            min={0} max={200}
-                            onChange={e => setFinetuneSettings(s => ({...s, saturation: +e.target.value}))}
-                            onReset={() => setFinetuneSettings(s => ({...s, saturation: DEFAULT_FINETUNE_SETTINGS.saturation}))}
-                        />
-                        <FinetuneSlider 
-                            label="色溫" value={finetuneSettings.sepia}
-                            min={0} max={100}
-                            onChange={e => setFinetuneSettings(s => ({...s, sepia: +e.target.value}))}
-                            onReset={() => setFinetuneSettings(s => ({...s, sepia: DEFAULT_FINETUNE_SETTINGS.sepia}))}
-                        />
-                         <FinetuneSlider 
-                            label="暈映" value={finetuneSettings.vignette}
-                            min={0} max={100}
-                            onChange={e => setFinetuneSettings(s => ({...s, vignette: +e.target.value}))}
-                            onReset={() => setFinetuneSettings(s => ({...s, vignette: DEFAULT_FINETUNE_SETTINGS.vignette}))}
-                        />
-                    </div>
-                    <div className="mt-4 flex justify-center">
-                        <button 
-                            onClick={() => setFinetuneSettings(DEFAULT_FINETUNE_SETTINGS)}
-                            className="text-xs bg-gray-600 hover:bg-gray-500 text-white font-semibold py-1 px-3 rounded-md transition-colors"
-                        >
-                            Reset All Adjustments
-                        </button>
-                    </div>
-                </div>
-              )}
             </div>
           </div>
 
-          <div className="flex items-center justify-center p-2 space-x-1">
-            {TOOLS.map(tool => (
-              <button
-                key={tool.id}
-                onClick={() => {
-                  const panelTools = ['filter', 'frame', 'sticker', 'finetune'];
-                  if (activeTool === tool.id && panelTools.includes(tool.id)) {
-                    setActiveTool('crop');
-                  } else {
-                    setActiveTool(tool.id);
-                  }
-                }}
-                className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg transition-colors duration-200 ${activeTool === tool.id ? 'bg-indigo-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                title={tool.name}
-                disabled={!enabledTools.includes(tool.id)}
-              >
-                <tool.icon className={`w-5 h-5 mb-1 ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`} />
-                <span className={`text-[11px] font-medium ${!enabledTools.includes(tool.id) ? 'opacity-50' : ''}`}>{tool.name}</span>
-              </button>
-            ))}
+          <div className="w-full">
+            {renderFooter()}
           </div>
-           {activeTool === 'rotation' && (
-              <div className="p-4 flex justify-center items-center gap-4 border-t border-gray-700/80">
-                <button onClick={() => flip('x')} title="Flip Horizontal" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipHorizontalIcon className="w-6 h-6" /></button>
-                <button onClick={() => flip('y')} title="Flip Vertical" className="p-2 rounded-full hover:bg-gray-700 transition-colors"><FlipVerticalIcon className="w-6 h-6" /></button>
-                <div className="flex items-center gap-2 w-48">
-                    <span className="text-sm w-12 text-center">{Math.round(transform.rotation)}°</span>
-                    <input 
-                      type="range" min="-180" max="180" step="0.5" value={transform.rotation}
-                      onChange={handleRotationSliderChange}
-                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
-                    />
-                </div>
-              </div>
-            )}
-            {activeTool === 'annotate' && (
-              <div className="p-4 flex flex-wrap justify-center items-center gap-4 border-t border-gray-700/80">
-                <button onClick={() => setDrawingPaths(paths => paths.slice(0, -1))} title="Undo" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><UndoIcon className="w-6 h-6" /></button>
-                <button onClick={() => setDrawingPaths([])} title="Clear All" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><Trash2Icon className="w-6 h-6" /></button>
-                <div className="flex items-center gap-2">
-                  {DRAW_COLORS.map(color => (
-                    <button key={color} onClick={() => { setBrushColor(color); setIsErasing(false); }} className={`w-7 h-7 rounded-full border-2 transition-all ${brushColor === color && !isErasing ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: color }} />
-                  ))}
-                </div>
-                 <button onClick={() => setIsErasing(!isErasing)} title="Eraser" className={`p-2 rounded-full transition-colors ${isErasing ? 'bg-indigo-500' : 'hover:bg-gray-700'}`}><EraserIcon className="w-6 h-6" /></button>
-                <div className="flex items-center gap-2 w-48">
-                    <span className="text-sm w-10 text-center">{brushSize}px</span>
-                    <input 
-                      type="range" min="1" max="50" step="1" value={brushSize}
-                      onChange={(e) => setBrushSize(parseInt(e.target.value, 10))}
-                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
-                    />
-                </div>
-              </div>
-            )}
         </footer>
       </div>
     </div>
