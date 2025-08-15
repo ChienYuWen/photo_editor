@@ -112,9 +112,8 @@ export const useImageTransform = (props: UseImageTransformProps) => {
     interactionState.current.lastPanPosition = { x: clientX, y: clientY };
 
     setTransform(prev => {
-        const newX = prev.x + dx;
-        const newY = prev.y + dy;
-        return clampTransform({ ...prev, x: newX, y: newY });
+        const newTransform = { ...prev, x: prev.x + dx, y: prev.y + dy };
+        return clampTransform(newTransform);
     });
   }, [clampTransform]);
   

@@ -27,3 +27,18 @@ export interface Sticker {
   rotation: number;
   scale: number;
 }
+
+export interface DrawingPath {
+  points: { x: number; y: number }[];
+  color: string;
+  size: number;
+  isEraser: boolean;
+}
+
+export interface FinetuneSettings {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sepia: number; // For warmth
+  vignette: number;
+}

@@ -1,14 +1,14 @@
-import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import type { Filter, Frame, Sticker } from '../types';
+import type { Filter, Frame, Sticker, DrawingPath, FinetuneSettings } from '../types';
 import { FILTERS, FRAMES } from '../constants';
 import { useImageTransform } from '../hooks/useImageTransform';
 import SelectorPanel from './SelectorPanel';
 import FinalImageModal from './FinalImageModal';
 import { 
   CropIcon, FilterIcon, PencilIcon, StickerIcon, FillIcon, RedactIcon, FrameIcon, ImagePlusIcon, 
-  RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon, EyeIcon,
-  FlipVerticalIcon
+  RotateCwIcon, FlipHorizontalIcon, SpinnerIcon, SparklesIcon, Trash2Icon, EyeIcon, TuneIcon,
+  FlipVerticalIcon, UndoIcon, EraserIcon
 } from './icons';
 
 declare const html2canvas: any;
@@ -19,6 +19,14 @@ interface EditorProps {
 }
 
 type Tool = 'crop' | 'rotation' | 'finetune' | 'filter' | 'annotate' | 'sticker' | 'fill' | 'redact' | 'frame';
+
+const DEFAULT_FINETUNE_SETTINGS: FinetuneSettings = {
+  brightness: 100,
+  contrast: 100,
+  saturation: 100,
+  sepia: 0,
+  vignette: 0,
+};
 
 const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [activeTool, setActiveTool] = useState<Tool>('crop');
@@ -36,6 +44,9 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const printFrameRef = useRef<HTMLDivElement>(null);
   const hasBeenInitialized = useRef(false);
   
+  // Finetune state
+  const [finetuneSettings, setFinetuneSettings] = useState<FinetuneSettings>(DEFAULT_FINETUNE_SETTINGS);
+
   // Sticker state
   const [stickers, setStickers] = useState<Sticker[]>([]);
   const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
@@ -44,6 +55,16 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   const [generatedStickers, setGeneratedStickers] = useState<string[]>([]);
   const [stickerError, setStickerError] = useState<string | null>(null);
   const [draggingSticker, setDraggingSticker] = useState<{id: string, startX: number, startY: number, mouseStartX: number, mouseStartY: number} | null>(null);
+  
+  // Drawing state
+  const [drawingPaths, setDrawingPaths] = useState<DrawingPath[]>([]);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [brushColor, setBrushColor] = useState('#ef4444'); // red-500
+  const [brushSize, setBrushSize] = useState(8);
+  const [isErasing, setIsErasing] = useState(false);
+  const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [cursorPos, setCursorPos] = useState({ x: -100, y: -100, visible: false });
+
 
   const { 
     containerRef, 
@@ -59,8 +80,21 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   } = useImageTransform({
     imageBounds, 
     frameBounds,
-    rotationGestureEnabled: activeTool !== 'crop',
+    rotationGestureEnabled: activeTool !== 'crop' && activeTool !== 'annotate',
   });
+
+  const combinedFilterStyle = useMemo(() => {
+    const { brightness, contrast, saturation, sepia } = finetuneSettings;
+    const finetuneFilters = [
+      `brightness(${brightness / 100})`,
+      `contrast(${contrast / 100})`,
+      `saturate(${saturation / 100})`,
+      `sepia(${sepia / 100})`,
+    ].join(' ');
+    
+    return `${activeFilter.style} ${finetuneFilters}`.trim();
+  }, [activeFilter, finetuneSettings]);
+
 
   useLayoutEffect(() => {
     const img = new Image();
@@ -173,6 +207,86 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
     setActiveStickerId(null);
   };
   
+  const getPointInImageSpace = useCallback((e: React.MouseEvent | React.TouchEvent<HTMLElement>) => {
+    if (!containerRef.current || !imageBounds) return null;
+
+    const mainRect = containerRef.current.getBoundingClientRect();
+    
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    // 1. Coords relative to the container center
+    const viewX = clientX - mainRect.left - mainRect.width / 2;
+    const viewY = clientY - mainRect.top - mainRect.height / 2;
+
+    const { x, y, scale, rotation, flipX, flipY } = transform;
+    
+    // Inverse operations in reverse order of CSS transform application (right-to-left)
+    // 1. Undo Translate
+    let pX = viewX - x;
+    let pY = viewY - y;
+
+    // 2. Undo Flip (scaleX/Y)
+    pX /= (flipX ? -1 : 1);
+    pY /= (flipY ? -1 : 1);
+
+    // 3. Undo Rotate
+    const angleRad = -rotation * (Math.PI / 180);
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+    let rotatedX = pX * cos - pY * sin;
+    let rotatedY = pX * sin + pY * cos;
+    
+    // 4. Undo Scale
+    pX = rotatedX / scale;
+    pY = rotatedY / scale;
+    
+    // 5. Convert from image-center-relative to image-top-left-relative coords
+    return {
+        x: pX + imageBounds.width / 2,
+        y: pY + imageBounds.height / 2,
+    };
+  }, [imageBounds, transform]);
+
+  const handleDrawingStart = useCallback((e: React.MouseEvent | React.TouchEvent<HTMLElement>) => {
+    if (activeTool !== 'annotate') return;
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const point = getPointInImageSpace(e);
+    if (!point) return;
+
+    setIsDrawing(true);
+    const newPath: DrawingPath = {
+        points: [point],
+        color: brushColor,
+        size: brushSize,
+        isEraser: isErasing,
+    };
+    setDrawingPaths(prev => [...prev, newPath]);
+  }, [activeTool, getPointInImageSpace, brushColor, brushSize, isErasing]);
+
+  const handleDrawingMove = useCallback((e: React.MouseEvent | React.TouchEvent<HTMLElement>) => {
+      if (!isDrawing || activeTool !== 'annotate') return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const point = getPointInImageSpace(e);
+      if (!point) return;
+
+      setDrawingPaths(prev => {
+          const newPaths = [...prev];
+          const currentPath = newPaths[newPaths.length - 1];
+          currentPath.points.push(point);
+          return newPaths;
+      });
+  }, [isDrawing, activeTool, getPointInImageSpace]);
+
+  const handleDrawingEnd = useCallback(() => {
+      if (activeTool !== 'annotate') return;
+      setIsDrawing(false);
+  }, [activeTool]);
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const stickerId = target.dataset.stickerId;
@@ -190,13 +304,20 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                 mouseStartY: e.clientY
             });
         }
+    } else if (activeTool === 'annotate') {
+        handleDrawingStart(e);
     } else {
         setActiveStickerId(null);
         imageTransformHandlers.onMouseDown(e);
     }
-  }, [stickers, imageTransformHandlers]);
+  }, [stickers, imageTransformHandlers, activeTool, handleDrawingStart]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (activeTool === 'annotate' && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top, visible: true });
+    }
+
     if (draggingSticker && frameBounds) {
         const dx = e.clientX - draggingSticker.mouseStartX;
         const dy = e.clientY - draggingSticker.mouseStartY;
@@ -220,15 +341,85 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
 
             return { ...s, x: newPos.x, y: newPos.y };
         }));
+    } else if (activeTool === 'annotate') {
+        handleDrawingMove(e);
     } else {
         imageTransformHandlers.onMouseMove(e);
     }
-  }, [draggingSticker, imageTransformHandlers, frameBounds]);
+  }, [draggingSticker, imageTransformHandlers, frameBounds, activeTool, handleDrawingMove]);
 
   const handleMouseUp = useCallback(() => {
     setDraggingSticker(null);
-    imageTransformHandlers.onMouseUp();
-  }, [imageTransformHandlers]);
+    if (activeTool === 'annotate') {
+        handleDrawingEnd();
+    } else {
+        imageTransformHandlers.onMouseUp();
+    }
+  }, [imageTransformHandlers, activeTool, handleDrawingEnd]);
+
+  const handleMouseLeave = useCallback(() => {
+    setCursorPos(prev => ({ ...prev, visible: false }));
+    handleMouseUp();
+  }, [handleMouseUp]);
+
+  const handleMouseEnter = useCallback((e: React.MouseEvent) => {
+      if (activeTool === 'annotate') {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top, visible: true });
+      }
+  }, [activeTool]);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLElement>) => {
+    if (activeTool === 'annotate') {
+        handleDrawingStart(e);
+    } else {
+        imageTransformHandlers.onTouchStart(e);
+    }
+  }, [activeTool, handleDrawingStart, imageTransformHandlers]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLElement>) => {
+      if (activeTool === 'annotate') {
+          handleDrawingMove(e);
+      } else {
+          imageTransformHandlers.onTouchMove(e);
+      }
+  }, [activeTool, handleDrawingMove, imageTransformHandlers]);
+
+  const handleTouchEnd = useCallback(() => {
+      if (activeTool === 'annotate') {
+          handleDrawingEnd();
+      } else {
+          imageTransformHandlers.onTouchEnd();
+      }
+  }, [activeTool, handleDrawingEnd, imageTransformHandlers]);
+
+
+  useLayoutEffect(() => {
+      const canvas = drawingCanvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!ctx || !imageBounds) return;
+
+      ctx.clearRect(0, 0, imageBounds.width, imageBounds.height);
+      
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      drawingPaths.forEach(path => {
+          if (path.points.length < 2) return;
+
+          ctx.beginPath();
+          ctx.strokeStyle = path.color;
+          ctx.lineWidth = path.size;
+          ctx.globalCompositeOperation = path.isEraser ? 'destination-out' : 'source-over';
+          
+          ctx.moveTo(path.points[0].x, path.points[0].y);
+          for (let i = 1; i < path.points.length; i++) {
+              ctx.lineTo(path.points[i].x, path.points[i].y);
+          }
+          ctx.stroke();
+      });
+  }, [drawingPaths, imageBounds]);
+  
   
   const handleSmartEnhance = useCallback(async () => {
     if (!imageSrc || !process.env.API_KEY) {
@@ -320,7 +511,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         
         // Draw main image with filter
         ctx.save();
-        if (activeFilter.style) ctx.filter = activeFilter.style;
+        if (combinedFilterStyle) ctx.filter = combinedFilterStyle;
         ctx.translate(contentCanvas.width / 2, contentCanvas.height / 2);
         
         const { x, y, scale, rotation, flipX, flipY } = transform;
@@ -334,11 +525,35 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         ctx.scale(effectiveScale, effectiveScale);
         
         ctx.drawImage(img, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
+
+        // Render Annotations from the live canvas
+        const liveDrawingCanvas = drawingCanvasRef.current;
+        if (liveDrawingCanvas && drawingPaths.length > 0) {
+            ctx.drawImage(liveDrawingCanvas, -imageBounds.width / 2, -imageBounds.height / 2, imageBounds.width, imageBounds.height);
+        }
+        
         ctx.restore();
 
+        // Draw Vignette
+        ctx.filter = 'none';
+        if (finetuneSettings.vignette > 0) {
+            const strength = finetuneSettings.vignette / 100; // 0 to 1
+            const outerRadius = Math.sqrt(Math.pow(contentCanvas.width / 2, 2) + Math.pow(contentCanvas.height / 2, 2));
+            const innerRadius = outerRadius * (1 - strength);
+    
+            const gradient = ctx.createRadialGradient(
+                contentCanvas.width / 2, contentCanvas.height / 2, innerRadius,
+                contentCanvas.width / 2, contentCanvas.height / 2, outerRadius
+            );
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(0.8, `rgba(0,0,0,${strength * 0.7})`);
+            gradient.addColorStop(1, `rgba(0,0,0,${strength * 0.8})`);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, contentCanvas.width, contentCanvas.height);
+        }
 
         // Draw stickers onto the content canvas
-        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
         const stickerImages = await Promise.all(stickers.map(s => new Promise<HTMLImageElement>((resolve, reject) => {
             const stickerImg = new Image();
             stickerImg.crossOrigin = 'anonymous';
@@ -406,12 +621,13 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
         if (finalImageContainer) document.body.removeChild(finalImageContainer);
         setIsProcessing(false);
     }
-  }, [activeFilter.style, activeFrame.class, imageSrc, transform, imageBounds, stickers]);
+  }, [combinedFilterStyle, activeFrame.class, imageSrc, transform, imageBounds, stickers, drawingPaths, finetuneSettings]);
 
 
   const TOOLS = [
     { id: 'crop', icon: CropIcon, name: 'Crop' },
     { id: 'rotation', icon: RotateCwIcon, name: 'Rotation' },
+    { id: 'finetune', icon: TuneIcon, name: 'Finetune' },
     { id: 'filter', icon: FilterIcon, name: 'Filter' },
     { id: 'frame', icon: FrameIcon, name: 'Frame' },
     { id: 'sticker', icon: StickerIcon, name: 'Sticker' },
@@ -424,8 +640,22 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
       setRotation(parseFloat(e.target.value));
   };
   
-  const enabledTools = ['crop', 'rotation', 'filter', 'frame', 'sticker'];
-  const showOptionsPanel = ['filter', 'frame', 'sticker'].includes(activeTool);
+  const enabledTools = ['crop', 'rotation', 'finetune', 'filter', 'frame', 'sticker', 'annotate'];
+  const showOptionsPanel = ['filter', 'frame', 'sticker', 'finetune'].includes(activeTool);
+  const DRAW_COLORS = ['#ffffff', '#000000', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6'];
+
+  const FinetuneSlider = ({ label, value, min, max, step = 1, onChange, onReset }) => (
+    <div className="flex items-center gap-2 text-sm">
+        <label className="w-20 text-gray-300 capitalize">{label}</label>
+        <input 
+            type="range" min={min} max={max} step={step} value={value}
+            onChange={onChange}
+            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
+        />
+        <span className="text-xs w-8 text-right">{value}</span>
+        <button onClick={onReset} title={`Reset ${label}`} className="p-1 rounded-full hover:bg-gray-700 transition-colors"><UndoIcon className="w-4 h-4" /></button>
+    </div>
+  );
 
   return (
     <div className="w-full h-dvh bg-gray-900 text-white flex flex-col">
@@ -451,7 +681,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
               onMouseLeave={() => setIsComparing(false)}
               onTouchStart={() => setIsComparing(true)}
               onTouchEnd={() => setIsComparing(false)}
-              disabled={activeFilter.name === 'None' || isProcessing || isEnhancing}
+              disabled={activeFilter.name === 'None' && JSON.stringify(finetuneSettings) === JSON.stringify(DEFAULT_FINETUNE_SETTINGS) || isProcessing || isEnhancing}
               className="flex items-center gap-2 text-sm text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-md px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title="Press and hold to see the original photo"
             >
@@ -471,21 +701,43 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
       <div className="flex-1 relative overflow-hidden">
         <main 
             ref={containerRef} 
-            className="w-full h-full relative flex items-center justify-center p-4 overflow-hidden cursor-move touch-none"
-            {...imageTransformHandlers} 
+            className={`w-full h-full relative flex items-center justify-center p-4 overflow-hidden touch-none ${activeTool === 'annotate' ? 'cursor-none' : 'cursor-move'}`}
+            onMouseEnter={handleMouseEnter}
             onMouseDown={handleMouseDown} 
             onMouseMove={handleMouseMove} 
             onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
         >
-            <div className="absolute w-full h-full flex items-center justify-center pointer-events-none">
+            <div 
+              className="absolute overflow-hidden"
+              style={{...imageStyle, pointerEvents: 'none'}}
+            >
                 <img
                     src={imageSrc}
                     alt="user content"
-                    className={`max-w-none select-none flex-shrink-0 transition-all duration-200`}
-                    style={{ ...imageStyle, filter: isComparing ? 'none' : activeFilter.style }}
+                    className="max-w-none select-none block"
+                    style={{ filter: isComparing ? 'none' : combinedFilterStyle }}
                     draggable="false"
                 />
+                {imageBounds && (
+                    <canvas
+                        ref={drawingCanvasRef}
+                        width={imageBounds.width}
+                        height={imageBounds.height}
+                        className="absolute top-0 left-0"
+                    />
+                )}
+                {finetuneSettings.vignette > 0 && !isComparing && (
+                  <div 
+                    className="absolute top-0 left-0 w-full h-full"
+                    style={{ 
+                        boxShadow: `inset 0 0 ${finetuneSettings.vignette * 2}px ${finetuneSettings.vignette}px rgba(0,0,0,0.6)`
+                    }}
+                  />
+                )}
             </div>
 
             <div
@@ -511,6 +763,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                       top: '50%',
                       left: '50%',
                       transform: `translate(-50%, -50%) translate(${sticker.x}px, ${sticker.y}px) rotate(${sticker.rotation}deg)`,
+                      pointerEvents: activeTool === 'annotate' ? 'none' : 'auto',
                     }}
                   >
                      <img 
@@ -518,7 +771,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                        alt="sticker"
                        draggable="false"
                        data-sticker-id={sticker.id}
-                       className="w-full h-full pointer-events-auto"
+                       className="w-full h-full"
                      />
                      {activeStickerId === sticker.id && (
                        <button 
@@ -532,9 +785,29 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                   </div>
                 ))}
             </div>
+             {activeTool === 'annotate' && cursorPos.visible && (
+                <div
+                    className="absolute rounded-full border pointer-events-none z-50"
+                    style={{
+                        left: cursorPos.x,
+                        top: cursorPos.y,
+                        width: `${brushSize * transform.scale}px`,
+                        height: `${brushSize * transform.scale}px`,
+                        transform: 'translate(-50%, -50%)',
+                        borderColor: isErasing ? 'white' : brushColor,
+                        borderWidth: '2px',
+                        backgroundColor: isErasing ? 'rgba(255, 255, 255, 0.3)' : 'transparent',
+                        boxShadow: '0 0 0 1px rgba(0,0,0,0.5)'
+                    }}
+                />
+            )}
         </main>
         
-        <footer className="absolute bottom-0 left-0 right-0 bg-gray-800/70 backdrop-blur-md shadow-inner z-10 border-t border-gray-700/50">
+        <footer 
+          className="absolute bottom-0 left-0 right-0 bg-gray-800/70 backdrop-blur-md shadow-inner z-10 border-t border-gray-700/50"
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+        >
           <div className={`transition-[max-height] duration-300 ease-in-out overflow-hidden ${showOptionsPanel ? 'max-h-60' : 'max-h-0'}`}>
             <div className="w-full border-b border-gray-700/80">
               {activeTool === 'filter' && (
@@ -611,6 +884,50 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                   </div>
                 </div>
               )}
+               {activeTool === 'finetune' && (
+                <div className="p-4 border-t border-gray-700/80">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+                        <FinetuneSlider 
+                            label="亮度" value={finetuneSettings.brightness}
+                            min={50} max={150}
+                            onChange={e => setFinetuneSettings(s => ({...s, brightness: +e.target.value}))}
+                            onReset={() => setFinetuneSettings(s => ({...s, brightness: DEFAULT_FINETUNE_SETTINGS.brightness}))}
+                        />
+                        <FinetuneSlider 
+                            label="對比" value={finetuneSettings.contrast}
+                            min={50} max={150}
+                            onChange={e => setFinetuneSettings(s => ({...s, contrast: +e.target.value}))}
+                            onReset={() => setFinetuneSettings(s => ({...s, contrast: DEFAULT_FINETUNE_SETTINGS.contrast}))}
+                        />
+                        <FinetuneSlider 
+                            label="飽和度" value={finetuneSettings.saturation}
+                            min={0} max={200}
+                            onChange={e => setFinetuneSettings(s => ({...s, saturation: +e.target.value}))}
+                            onReset={() => setFinetuneSettings(s => ({...s, saturation: DEFAULT_FINETUNE_SETTINGS.saturation}))}
+                        />
+                        <FinetuneSlider 
+                            label="色溫" value={finetuneSettings.sepia}
+                            min={0} max={100}
+                            onChange={e => setFinetuneSettings(s => ({...s, sepia: +e.target.value}))}
+                            onReset={() => setFinetuneSettings(s => ({...s, sepia: DEFAULT_FINETUNE_SETTINGS.sepia}))}
+                        />
+                         <FinetuneSlider 
+                            label="暈映" value={finetuneSettings.vignette}
+                            min={0} max={100}
+                            onChange={e => setFinetuneSettings(s => ({...s, vignette: +e.target.value}))}
+                            onReset={() => setFinetuneSettings(s => ({...s, vignette: DEFAULT_FINETUNE_SETTINGS.vignette}))}
+                        />
+                    </div>
+                    <div className="mt-4 flex justify-center">
+                        <button 
+                            onClick={() => setFinetuneSettings(DEFAULT_FINETUNE_SETTINGS)}
+                            className="text-xs bg-gray-600 hover:bg-gray-500 text-white font-semibold py-1 px-3 rounded-md transition-colors"
+                        >
+                            Reset All Adjustments
+                        </button>
+                    </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -619,7 +936,7 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
               <button
                 key={tool.id}
                 onClick={() => {
-                  const panelTools = ['filter', 'frame', 'sticker'];
+                  const panelTools = ['filter', 'frame', 'sticker', 'finetune'];
                   if (activeTool === tool.id && panelTools.includes(tool.id)) {
                     setActiveTool('crop');
                   } else {
@@ -644,6 +961,26 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
                     <input 
                       type="range" min="-180" max="180" step="0.5" value={transform.rotation}
                       onChange={handleRotationSliderChange}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
+                    />
+                </div>
+              </div>
+            )}
+            {activeTool === 'annotate' && (
+              <div className="p-4 flex flex-wrap justify-center items-center gap-4 border-t border-gray-700/80">
+                <button onClick={() => setDrawingPaths(paths => paths.slice(0, -1))} title="Undo" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><UndoIcon className="w-6 h-6" /></button>
+                <button onClick={() => setDrawingPaths([])} title="Clear All" className="p-2 rounded-full hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={drawingPaths.length === 0}><Trash2Icon className="w-6 h-6" /></button>
+                <div className="flex items-center gap-2">
+                  {DRAW_COLORS.map(color => (
+                    <button key={color} onClick={() => { setBrushColor(color); setIsErasing(false); }} className={`w-7 h-7 rounded-full border-2 transition-all ${brushColor === color && !isErasing ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: color }} />
+                  ))}
+                </div>
+                 <button onClick={() => setIsErasing(!isErasing)} title="Eraser" className={`p-2 rounded-full transition-colors ${isErasing ? 'bg-indigo-500' : 'hover:bg-gray-700'}`}><EraserIcon className="w-6 h-6" /></button>
+                <div className="flex items-center gap-2 w-48">
+                    <span className="text-sm w-10 text-center">{brushSize}px</span>
+                    <input 
+                      type="range" min="1" max="50" step="1" value={brushSize}
+                      onChange={(e) => setBrushSize(parseInt(e.target.value, 10))}
                       className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer range-sm" 
                     />
                 </div>
