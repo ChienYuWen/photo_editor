@@ -94,15 +94,55 @@ const Editor: React.FC<EditorProps> = ({ imageSrc, onClearImage }) => {
   });
 
   const combinedFilterStyle = useMemo(() => {
-    const { brightness, contrast, saturation, sepia } = finetuneSettings;
-    const finetuneFilters = [
-      `brightness(${brightness / 100})`,
-      `contrast(${contrast / 100})`,
-      `saturate(${saturation / 100})`,
-      `sepia(${sepia / 100})`,
-    ].join(' ');
+    // Start with values from the finetune sliders
+    const baseSettings: { [key: string]: number } = {
+        brightness: finetuneSettings.brightness / 100,
+        contrast: finetuneSettings.contrast / 100,
+        saturate: finetuneSettings.saturation / 100,
+        sepia: finetuneSettings.sepia / 100,
+    };
+
+    const otherFilters: string[] = [];
+    const finetuneFilterNames = new Set(Object.keys(baseSettings));
     
-    return `${activeFilter.style} ${finetuneFilters}`.trim();
+    if (activeFilter.style) {
+        const filterRegex = /(\w+)\(([^)]+)\)/g;
+        // Extract all individual filter functions from the preset string
+        const presetFilters = activeFilter.style.match(filterRegex) || [];
+        
+        for (const filter of presetFilters) {
+            // This regex is safe for simple values like "1", "0.6", "-15deg"
+            const parts = filter.match(/(\w+)\((.+)\)/);
+            if (!parts) continue;
+            
+            const name = parts[1];
+            const valueString = parts[2];
+            const value = parseFloat(valueString);
+
+            // If it's a finetune-able filter, merge its value
+            if (finetuneFilterNames.has(name) && !isNaN(value)) {
+                if (name === 'brightness' || name === 'contrast' || name === 'saturate') {
+                    // These filters are multiplicative
+                    baseSettings[name] *= value;
+                } else if (name === 'sepia') {
+                    // Sepia is additive and clamped
+                    baseSettings[name] += value;
+                    if (baseSettings[name] > 1) baseSettings[name] = 1;
+                }
+            } else {
+                // Otherwise, keep the filter as is (e.g., grayscale, invert, hue-rotate)
+                otherFilters.push(filter);
+            }
+        }
+    }
+    
+    // Reconstruct the finetune part of the filter string from the merged values
+    const finetuneFilters = Object.entries(baseSettings)
+      .map(([name, value]) => `${name}(${value})`)
+      .join(' ');
+    
+    // Combine the 'other' filters with the consolidated finetune filters
+    return [...otherFilters, finetuneFilters].join(' ').trim();
   }, [activeFilter, finetuneSettings]);
 
 
